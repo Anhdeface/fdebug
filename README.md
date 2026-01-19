@@ -1,3 +1,7 @@
+
+![img](https://i.pinimg.com/originals/c9/16/d9/c916d9fc9dd8b168666baea645f54234.gif)
+
+---
 # Anti-Debug Protection Module
 
 **A comprehensive, modular anti-debugging solution for Windows-based Rust applications with VM-based detection and silent corruption mechanisms.**
