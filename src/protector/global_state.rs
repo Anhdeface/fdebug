@@ -134,3 +134,8 @@ pub fn get_integrity_hash() -> u32 {
     GLOBAL_INTEGRITY_HASH.load(Ordering::SeqCst)
 }
 
+/// Get the current encoded state value
+pub fn get_current_encoded_state() -> u32 {
+    GLOBAL_ENCODED_STATE.load(Ordering::SeqCst)
+}
+

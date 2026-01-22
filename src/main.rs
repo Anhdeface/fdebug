@@ -52,6 +52,7 @@ struct TinyVm {
     v_stack: [u64; 32],   // Virtual Stack (fixed size to avoid heap allocation)
     sp: usize,            // Stack Pointer
     accumulator: u64,     // Accumulator for operations
+    key: u64,             // Local key for this VM instance
 }
 
 /// Virtual Machine Operations with auto-generated polymorphic values
@@ -91,12 +92,13 @@ enum VmOp {
 }
 
 impl TinyVm {
-    fn new() -> Self {
+    fn new(local_key: u64) -> Self {
         TinyVm {
             vip: 0,
             v_stack: [0; 32],
             sp: 0,
             accumulator: 0,
+            key: local_key,
         }
     }
 
@@ -155,8 +157,12 @@ unsafe fn cpuid_helper(leaf: u32) -> (u32, u32, u32, u32) {
 
 /// Execute bytecode in the TinyVM
 #[inline(never)] // Prevent inlining to make analysis harder
-fn vm_execute(bytecode: &[u8], encryption_key: u8) -> u64 {
-    let mut vm = TinyVm::new();
+fn vm_execute(bytecode: &[u8], encryption_key: u8, context_key: u64) -> u64 {
+    // Mix the context key with the global VM key to create a local key for this execution
+    let global_vm_key = crate::protector::global_state::get_current_vm_key() as u64;
+    let local_vm_key = global_vm_key ^ context_key;
+
+    let mut vm = TinyVm::new(local_vm_key);
 
     // Execute bytecode directly without allocating a decoded copy
     while vm.vip < bytecode.len() {
@@ -529,8 +535,6 @@ fn _integrity_marker_end() -> u32 {
 // CONSTANTS & CONFIGURATION
 // ============================================================================
 
-/// Hardcoded fallback threshold for RDTSC (in CPU cycles)
-const RDTSC_FALLBACK_THRESHOLD: u64 = 100;
 
 /// Maximum acceptable baseline delta during calibration
 const CALIBRATION_SANITY_MAX: u64 = 1000;
@@ -544,6 +548,19 @@ const ENABLE_VEH_DETECTION: bool = true;
 
 /// Integrity Check: Enable runtime self-integrity verification
 const ENABLE_INTEGRITY_CHECK: bool = true;
+
+// ============================================================================
+// DYNAMIC THRESHOLD CALCULATION
+// ============================================================================
+
+/// Get a dynamic threshold for RDTSC checks using runtime address calculation
+/// This makes the threshold vary between runs due to ASLR, preventing static analysis
+fn get_dynamic_threshold() -> u64 {
+    // Calculate threshold based on the address of a function to make it dynamic
+    let func_addr = get_dynamic_threshold as *const fn() -> u64 as u64;
+    // Apply arithmetic to get a reasonable threshold value
+    (func_addr % 50) + 80
+}
 
 // ============================================================================
 // NATIVE ENTROPY GENERATION (Using CPU instructions instead of SystemTime)
@@ -989,8 +1006,9 @@ pub fn checkpoint_memory_integrity() -> bool {
         (VmOp::OP_EXIT as u8) ^ encryption_key,
     ];
 
-    // Execute the bytecode in the VM
-    let vm_result = vm_execute(&memory_check_bytecode, encryption_key);
+    // Execute the bytecode in the VM with a context key
+    let context_key = get_cpu_entropy() as u64; // Use entropy as context key
+    let vm_result = vm_execute(&memory_check_bytecode, encryption_key, context_key);
 
     // THE KILLER FEATURE: Use VM result directly as key modifier
     // If there's a debugger, vm_result will be non-zero, corrupting the key
@@ -1029,16 +1047,16 @@ pub fn checkpoint_timing_anomaly() -> bool {
         // Subtract first from second to get delta
         (VmOp::OP_SUB as u8) ^ encryption_key,
         
-        // Load threshold value
+        // Load threshold value using dynamic calculation
         (VmOp::OP_LOAD_IMM as u8) ^ encryption_key,
-        (RDTSC_FALLBACK_THRESHOLD.to_le_bytes()[0]) ^ encryption_key,
-        (RDTSC_FALLBACK_THRESHOLD.to_le_bytes()[1]) ^ encryption_key,
-        (RDTSC_FALLBACK_THRESHOLD.to_le_bytes()[2]) ^ encryption_key,
-        (RDTSC_FALLBACK_THRESHOLD.to_le_bytes()[3]) ^ encryption_key,
-        (RDTSC_FALLBACK_THRESHOLD.to_le_bytes()[4]) ^ encryption_key,
-        (RDTSC_FALLBACK_THRESHOLD.to_le_bytes()[5]) ^ encryption_key,
-        (RDTSC_FALLBACK_THRESHOLD.to_le_bytes()[6]) ^ encryption_key,
-        (RDTSC_FALLBACK_THRESHOLD.to_le_bytes()[7]) ^ encryption_key,
+        (get_dynamic_threshold().to_le_bytes()[0]) ^ encryption_key,
+        (get_dynamic_threshold().to_le_bytes()[1]) ^ encryption_key,
+        (get_dynamic_threshold().to_le_bytes()[2]) ^ encryption_key,
+        (get_dynamic_threshold().to_le_bytes()[3]) ^ encryption_key,
+        (get_dynamic_threshold().to_le_bytes()[4]) ^ encryption_key,
+        (get_dynamic_threshold().to_le_bytes()[5]) ^ encryption_key,
+        (get_dynamic_threshold().to_le_bytes()[6]) ^ encryption_key,
+        (get_dynamic_threshold().to_le_bytes()[7]) ^ encryption_key,
         
         // Compare delta with threshold
         (VmOp::OP_CMP_GT as u8) ^ encryption_key,
@@ -1047,8 +1065,9 @@ pub fn checkpoint_timing_anomaly() -> bool {
         (VmOp::OP_EXIT as u8) ^ encryption_key,
     ];
 
-    // Execute the bytecode in the VM
-    let vm_result = vm_execute(&timing_check_bytecode, encryption_key);
+    // Execute the bytecode in the VM with a context key
+    let context_key = get_cpu_entropy() as u64; // Use entropy as context key
+    let vm_result = vm_execute(&timing_check_bytecode, encryption_key, context_key);
     
     // Interpret the result - if non-zero, we detected timing anomaly
     let detected = vm_result != 0;

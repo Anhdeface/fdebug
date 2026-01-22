@@ -18,8 +18,14 @@ use crate::protector::tiny_vm::{VmOp, vm_execute};
 // CONSTANTS & CONFIGURATION
 // ============================================================================
 
-/// Hardcoded fallback threshold for RDTSC (in CPU cycles)
-const RDTSC_FALLBACK_THRESHOLD: u64 = 100;
+/// Get a dynamic threshold for RDTSC checks using runtime address calculation
+/// This makes the threshold vary between runs due to ASLR, preventing static analysis
+fn get_dynamic_threshold() -> u64 {
+    // Calculate threshold based on the address of a function to make it dynamic
+    let func_addr = get_dynamic_threshold as *const fn() -> u64 as u64;
+    // Apply arithmetic to get a reasonable threshold value
+    (func_addr % 50) + 80
+}
 
 /// Maximum acceptable baseline delta during calibration
 const CALIBRATION_SANITY_MAX: u64 = 1000;
@@ -40,7 +46,7 @@ const ENABLE_INTEGRITY_CHECK: bool = true;
 
 /// Generate entropy using RDRAND instruction (if available)
 #[inline(always)]
-fn get_cpu_entropy() -> u32 {
+pub fn get_cpu_entropy() -> u32 {
     let mut result: u32 = 0;
     let success: u8;
 
@@ -79,26 +85,39 @@ fn get_cpu_entropy() -> u32 {
 // ============================================================================
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // Import global state from the global_state module
 use crate::protector::global_state::*;
 
 /// Distributed detection state using atomic variables for cross-thread synchronization
 pub struct DetectionVector {
+    /// Verification token that gets rotated and checked for integrity
+    pub token: u64,
+    /// Integrity checksum for the token
+    integrity_checksum: AtomicU64,
     /// Reference to global atomic state
     _state_ref: Arc<()>, // Placeholder to maintain compatibility
 }
 
 impl DetectionVector {
-    fn new() -> Self {
+    pub fn new() -> Self {
+        // Generate a random token using CPU entropy
+        let token = get_cpu_entropy() as u64;
         DetectionVector {
+            token,
+            integrity_checksum: AtomicU64::new(token), // Initialize checksum with token
             _state_ref: Arc::new(()), // Placeholder
         }
     }
 
-    fn new_with_seed(seed: u32) -> Self {
+    pub fn new_with_seed(seed: u32) -> Self {
+        // Generate a token based on the seed and CPU entropy
+        let cpu_entropy = get_cpu_entropy() as u64;
+        let token = (seed as u64) ^ cpu_entropy ^ 0xDEADBEEFCAFEBABE;
         DetectionVector {
+            token,
+            integrity_checksum: AtomicU64::new(token), // Initialize checksum with token
             _state_ref: Arc::new(()), // Placeholder
         }
     }
@@ -156,6 +175,92 @@ impl DetectionVector {
         if total_suspicion > 100 || current_category_suspicion > detection_threshold {
             self.set_debugged();
         }
+    }
+
+    /// Verify integrity and rotate the token
+    pub fn verify_and_rotate(&mut self) -> bool {
+        // Perform a light check using RDTSC to detect timing anomalies
+        let (start_low, start_high): (u32, u32);
+        unsafe {
+            std::arch::asm!(
+                "lfence",
+                "rdtsc",
+                "lfence",
+                out("eax") start_low,
+                out("edx") start_high,
+                options(nomem, nostack)
+            );
+        }
+        let start = ((start_high as u64) << 32) | (start_low as u64);
+
+        // Simple operation to measure timing
+        let mut x = 0u64;
+        for i in 0..10 {
+            x = x.wrapping_add(i);
+        }
+
+        let (end_low, end_high): (u32, u32);
+        unsafe {
+            std::arch::asm!(
+                "lfence",
+                "rdtsc",
+                "lfence",
+                out("eax") end_low,
+                out("edx") end_high,
+                options(nomem, nostack)
+            );
+        }
+        let end = ((end_high as u64) << 32) | (end_low as u64);
+
+        let elapsed = end.saturating_sub(start);
+
+        // Check for debugger presence through PEB flags as well
+        let peb_safe = self.check_peb_safety();
+
+        // Determine if we're in a safe environment
+        let is_safe = peb_safe && elapsed < 1000; // Adjust threshold as needed
+
+        // Apply rotation or corruption based on safety check
+        const MAGIC_CONST: u64 = 0x5DEECE66D; // A large odd constant for LCG-like behavior
+        if is_safe {
+            // Rotate the token normally
+            self.token = (self.token << 1) ^ MAGIC_CONST;
+        } else {
+            // If unsafe, flip some bits to corrupt the token
+            self.token ^= 0xAAAAAAAAAAAAAAAA; // Flip alternating bits
+        }
+
+        // Update integrity checksum
+        self.integrity_checksum.store(self.token, Ordering::SeqCst);
+
+        // Always return true - punishment is in the corrupted token
+        true
+    }
+
+    /// Helper method to check PEB safety
+    fn check_peb_safety(&self) -> bool {
+        // Read PEB BeingDebugged flag using inline assembly
+        let being_debugged: u8;
+        unsafe {
+            std::arch::asm!(
+                "mov {}, gs:[0x60 + 0x02]",  // GS:[TEB.Peb] + 0x02 = PEB.BeingDebugged
+                out(reg_byte) being_debugged,
+                options(nostack, preserves_flags)
+            );
+        }
+
+        // Also check NtGlobalFlag indirectly
+        let nt_global_flag: u32;
+        unsafe {
+            std::arch::asm!(
+                "mov {}, gs:[0x60 + 0xBC]",  // GS:[TEB.Peb] + 0xBC = PEB.NtGlobalFlag
+                out(reg) nt_global_flag,
+                options(nostack, preserves_flags)
+            );
+        }
+
+        // Return true if both flags indicate no debugger
+        being_debugged == 0 && (nt_global_flag & 0x70) == 0
     }
 
     /// Get the current encryption key (may be corrupted if debugger detected)
@@ -332,8 +437,9 @@ pub fn checkpoint_memory_integrity() -> bool {
         (VmOp::OP_EXIT as u8) ^ encryption_key,
     ];
 
-    // Execute the bytecode in the VM
-    let vm_result = vm_execute(&memory_check_bytecode, encryption_key);
+    // Execute the bytecode in the VM with a context key
+    let context_key = get_cpu_entropy() as u64; // Use entropy as context key
+    let vm_result = vm_execute(&memory_check_bytecode, encryption_key, context_key);
 
     // THE KILLER FEATURE: Use VM result directly as key modifier
     // If there's a debugger, vm_result will be non-zero, corrupting the key
@@ -371,16 +477,16 @@ pub fn checkpoint_timing_anomaly() -> bool {
         // Subtract first from second to get delta
         (VmOp::OP_SUB as u8) ^ encryption_key,
 
-        // Load threshold value
+        // Load threshold value using dynamic calculation
         (VmOp::OP_LOAD_IMM as u8) ^ encryption_key,
-        (RDTSC_FALLBACK_THRESHOLD.to_le_bytes()[0]) ^ encryption_key,
-        (RDTSC_FALLBACK_THRESHOLD.to_le_bytes()[1]) ^ encryption_key,
-        (RDTSC_FALLBACK_THRESHOLD.to_le_bytes()[2]) ^ encryption_key,
-        (RDTSC_FALLBACK_THRESHOLD.to_le_bytes()[3]) ^ encryption_key,
-        (RDTSC_FALLBACK_THRESHOLD.to_le_bytes()[4]) ^ encryption_key,
-        (RDTSC_FALLBACK_THRESHOLD.to_le_bytes()[5]) ^ encryption_key,
-        (RDTSC_FALLBACK_THRESHOLD.to_le_bytes()[6]) ^ encryption_key,
-        (RDTSC_FALLBACK_THRESHOLD.to_le_bytes()[7]) ^ encryption_key,
+        (get_dynamic_threshold().to_le_bytes()[0]) ^ encryption_key,
+        (get_dynamic_threshold().to_le_bytes()[1]) ^ encryption_key,
+        (get_dynamic_threshold().to_le_bytes()[2]) ^ encryption_key,
+        (get_dynamic_threshold().to_le_bytes()[3]) ^ encryption_key,
+        (get_dynamic_threshold().to_le_bytes()[4]) ^ encryption_key,
+        (get_dynamic_threshold().to_le_bytes()[5]) ^ encryption_key,
+        (get_dynamic_threshold().to_le_bytes()[6]) ^ encryption_key,
+        (get_dynamic_threshold().to_le_bytes()[7]) ^ encryption_key,
 
         // Compare delta with threshold
         (VmOp::OP_CMP_GT as u8) ^ encryption_key,
@@ -389,8 +495,9 @@ pub fn checkpoint_timing_anomaly() -> bool {
         (VmOp::OP_EXIT as u8) ^ encryption_key,
     ];
 
-    // Execute the bytecode in the VM
-    let vm_result = vm_execute(&timing_check_bytecode, encryption_key);
+    // Execute the bytecode in the VM with a context key
+    let context_key = get_cpu_entropy() as u64; // Use entropy as context key
+    let vm_result = vm_execute(&timing_check_bytecode, encryption_key, context_key);
 
     // Interpret the result - if non-zero, we detected timing anomaly
     let detected = vm_result != 0;
@@ -714,18 +821,52 @@ fn contains_encoded_string(haystack: &[u8], encoded_needle: &[u8], key: u8) -> b
 // COMPUTATION FUNCTIONS
 // ============================================================================
 
+use std::sync::Mutex;
+
+// Global instance of DetectionVector for token access
+static GLOBAL_DETECTION_VECTOR: Mutex<Option<DetectionVector>> = Mutex::new(None);
+
 #[inline(always)]
 fn compute_encryption_key() -> u8 {
     // Use the distributed state to get the current encryption key
     // This will return the corrupted key if debugger was detected
-    DetectionVector::get_current_encryption_key()
+    let base_key = DetectionVector::get_current_encryption_key();
+
+    // Mix with the current token from the global DetectionVector
+    let token = get_current_token();
+    let mixed_key = base_key ^ (token & 0xFF) as u8;
+
+    mixed_key
 }
 
 #[inline(always)]
 fn compute_vm_key() -> u8 {
     // Use the distributed state to get the current VM key
     // This will return the corrupted key if debugger was detected
-    DetectionVector::get_current_vm_key()
+    let base_key = DetectionVector::get_current_vm_key();
+
+    // Mix with the current token from the global DetectionVector
+    let token = get_current_token();
+    let mixed_key = base_key ^ ((token >> 8) & 0xFF) as u8;
+
+    mixed_key
+}
+
+/// Helper function to get the current token from the global DetectionVector
+fn get_current_token() -> u64 {
+    let guard = GLOBAL_DETECTION_VECTOR.lock().unwrap();
+    if let Some(ref dv) = *guard {
+        dv.token
+    } else {
+        // If not initialized, return a default value
+        0xDEADBEEFCAFEBABE
+    }
+}
+
+/// Initialize the global DetectionVector
+pub fn init_global_detection_vector(seed: u32) {
+    let mut guard = GLOBAL_DETECTION_VECTOR.lock().unwrap();
+    *guard = Some(DetectionVector::new_with_seed(seed));
 }
 
 // ============================================================================
@@ -869,12 +1010,88 @@ impl DetectionDetails {
 }
 
 // ============================================================================
+// DECOY SYSTEM (Mê hồn trận - Misleading functions for reverse engineers)
+// ============================================================================
+
+use std::sync::atomic::AtomicBool;
+
+// Global atomic flag to track if decoy functions have been tampered with
+static DECOY_TAMPERED: AtomicBool = AtomicBool::new(false);
+
+/// Security check main function - appears critical but is just a decoy
+/// REVERSE ENGINEERS: This function looks important but is just a distraction!
+pub fn security_check_main() -> bool {
+    // Simple check that looks important but is just a decoy
+    // If someone patches this function, they'll think they've bypassed security
+    // but the real checks are elsewhere
+
+    // This is the actual check - very simple
+    let is_debugged = unsafe {
+        // Use the windows crate instead of winapi
+        use windows::Win32::System::Diagnostics::Debug::IsDebuggerPresent;
+        IsDebuggerPresent()
+    };
+
+    // If this function was tampered with (patched to always return true/false),
+    // the real system will detect it through other means
+    is_debugged == false
+}
+
+/// Anti-hack guard function - another decoy that looks important
+/// REVERSE ENGINEERS: Don't waste time on this function!
+pub fn anti_hack_guard() -> bool {
+    // Another simple check that looks important
+    // This is just to distract from the real anti-debug mechanisms
+
+    // Simple check that looks complex but isn't
+    let entropy = get_cpu_entropy();
+    let fake_threshold = 0x12345678u32;
+
+    // This check is meaningless but looks important
+    (entropy ^ fake_threshold) != 0
+}
+
+/// Drop guard to detect tampering with decoy functions
+pub struct DecoyGuard {
+    id: u32,
+}
+
+impl DecoyGuard {
+    pub fn new(id: u32) -> Self {
+        DecoyGuard { id }
+    }
+}
+
+impl Drop for DecoyGuard {
+    fn drop(&mut self) {
+        // Check if decoy functions have been tampered with
+        // This is a secondary check to detect if someone has patched the decoy functions
+        if !security_check_main() || !anti_hack_guard() {
+            // If the decoy functions return unexpected results,
+            // it might indicate tampering - set the tamper flag
+            DECOY_TAMPERED.store(true, Ordering::SeqCst);
+
+            // Add suspicion if tampering is detected
+            add_suspicion(100, 0); // High suspicion for tampering
+        }
+    }
+}
+
+/// Function to check if decoy functions have been tampered with
+pub fn check_decoy_tampering() -> bool {
+    DECOY_TAMPERED.load(Ordering::SeqCst)
+}
+
+// ============================================================================
 // INITIALIZATION
 // ============================================================================
 
 /// One-time VEH protection initialization
 /// Should be called at application startup (in main)
 pub fn initialize_veh_protection() {
+    // Initialize the global DetectionVector with a default seed
+    init_global_detection_vector(0x12345678);
+
     // Initialize the global state through the global_state module
     crate::protector::global_state::initialize_veh_protection();
 
@@ -884,4 +1101,7 @@ pub fn initialize_veh_protection() {
     let _ = checkpoint_exception_handling();
     let _ = checkpoint_hypervisor_detection();
     let _ = checkpoint_integrity_self_hash();
+
+    // Initialize decoy system
+    let _decoy_guard = DecoyGuard::new(0xDEADBEEF);
 }
