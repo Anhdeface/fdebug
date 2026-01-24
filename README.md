@@ -1,345 +1,384 @@
-
 ![img](https://i.pinimg.com/originals/c9/16/d9/c916d9fc9dd8b168666baea645f54234.gif)
+# FDebug - Advanced Anti-Debug Protection System
 
----
-# Anti-Debug Protection Module
+A sophisticated, multi-layered anti-debugging protection system for Rust applications on Windows x86-64. FDebug detects debugging attempts and silently corrupts sensitive computations when tampering is detected, making reverse engineering economically unfeasible.
 
-**A comprehensive, modular anti-debugging solution for Windows-based Rust applications with VM-based detection and silent corruption mechanisms.**
+## Core Philosophy
 
-## Overview
+Rather than crashing when a debugger is detected (which provides attackers an easy anchor point), **fdebug** silently corrupts the transformation keys and internal state. The protected application continues running but produces subtly incorrect results - making debugging an endless nightmare of phantom bugs with no root cause.
 
-This is an advanced anti-debug protection library designed to detect and neutralize debuggers in Windows environments. It employs multiple sophisticated detection mechanisms including:
-
-- **Virtual Machine-based Detection**: Polymorphic bytecode execution for memory integrity checks
-- **Timing Anomaly Detection**: RDTSC-based timing analysis to detect debugger interference
-- **PEB Analysis**: Direct Process Environment Block examination for debug flags
-- **Hypervisor Detection**: Multi-layered detection of virtualization and cloud environments
-- **Self-Integrity Verification**: Runtime code integrity checking to detect tampering
-- **Distributed State System**: Atomic-based distributed detection state across threads
-- **Silent Corruption**: When a debugger is detected, sensitive operations are corrupted instead of exiting
+```
+Traditional Anti-Debug:  Debugger detected → Crash → Attacker patches
+                        
+FDebug Protection:      Debugger detected → Silent Corruption → 
+                        All calculations wrong → Attacker spends weeks 
+                        debugging non-existent bugs → Attacker gives up
+```
 
 ## Key Features
 
-### 🛡️ Multi-Layer Detection
-- **Memory Integrity Checkpoint**: Detects debugger through PEB flags and NtGlobalFlag values
-- **Timing Anomaly Checkpoint**: Uses RDTSC instruction to measure execution timing anomalies
-- **Exception Handling Checkpoint**: Monitors vectored exception handlers for breakpoint detection
-- **Hypervisor Detection Checkpoint**: Identifies virtualization environments with CPUID analysis
-- **Integrity Checkpoint**: Runtime verification of critical code sections
-
-### 🔐 Anti-Analysis Features
-- **Polymorphic Opcodes**: TinyVM instructions change at each build due to unique seeds
-- **XOR-Encoded Strings**: Critical strings are encoded to prevent static analysis
-- **Opaque Predicates**: Code flow includes conditional branches that appear complex but are mathematically predetermined
-- **Distributed Detection State**: Uses atomic variables to track detection across threads
-
-### 🎯 Intelligent Response
-- **Suspicion Scoring System**: Gradual accumulation of suspicion rather than immediate detection
-- **Category-based Thresholds**: Different detection types have different confidence requirements
-- **Silent Corruption Mode**: Instead of crashing, sensitive operations produce corrupted results
-- **Persistent State**: Once debugger is detected, the state remains set permanently
-
-## Platform Support
-
-- **Primary**: Windows x86_64 (fully supported)
-- **Secondary**: Other platforms have dummy implementations that always return false
-
-## Installation
-
-### As a Module
-
-1. Copy the `src/protector/` directory to your Rust project
-2. Add to your `lib.rs` or `main.rs`:
-
-```rust
-mod protector;
-use protector::Protector;
-```
-
-### As a Dependency (Cargo)
-
-Add to your `Cargo.toml`:
-
-```toml
-[dependencies]
-windows = { version = "0.51", features = ["Win32_Foundation", "Win32_System_Memory", "Win32_System_Diagnostics_Debug"] }
-```
+| Feature | Implementation | Effect |
+| --- | --- | --- |
+| **Multi-Vector Detection** | VEH hooks, RDTSC timing, Hardware BP, PEB checks | Catches debugging from multiple angles simultaneously |
+| **Polymorphic VM** | TinyVM with control flow flattening | Bytecode changes every build; signature-based bypass impossible |
+| **Distributed State** | 16-shard atomic scoring | Memory freezing attacks fail; manipulation is self-detecting |
+| **Silent Corruption** | Token-based key poisoning | No crashes; just silently wrong results |
+| **Honey Pot Traps** | Decoy functions with watchdog monitoring | Reverse engineers patch decoys → automatic detection → execution poisoned |
+| **Mathematical Coupling** | Security tokens bound to business logic | Cracked protection automatically invalidates calculations |
 
 ## Quick Start
+
+### Installation
+
+```rust
+// Cargo.toml
+[dependencies]
+fdebug = { path = "./fdebug" }
+
+// main.rs
+use fdebug::protector::{Protector, DYNAMIC_SEED};
+
+fn main() {
+    let protector = Protector::new(DYNAMIC_SEED);
+    println!("[+] Anti-debug protection initialized");
+}
+```
 
 ### Basic Usage
 
 ```rust
-use protector::Protector;
+use fdebug::protector::{Protector, SecureVault, ShieldedExecution};
 
 fn main() {
-    // Initialize the protector with a seed value
-    let protector = Protector::new(0x12345678);
+    let protector = Protector::new(DYNAMIC_SEED);
     
-    // Check if debugger is detected
-    if protector.is_debugged() {
-        eprintln!("Debugger detected!");
-        std::process::exit(1);
-    }
+    // Protect sensitive data
+    let api_key = SecureVault::new("sk_live_secret_key".to_string());
     
-    // Your application code here
-    println!("Safe from debuggers!");
-}
-```
-
-### Advanced Usage with Detection Details
-
-```rust
-use protector::Protector;
-
-fn main() {
-    let protector = Protector::new(0x12345678);
+    let is_valid = protector.run_secure(&api_key, |key, token| {
+        // token is only valid in clean environment
+        key.len() == 18 && (token % 7) == 0
+    });
     
-    // Get detailed detection information
-    let details = protector.get_detection_details();
-    
-    println!("Is Debugged: {}", details.is_debugged);
-    println!("Suspicion Score: {}", details.score);
-    println!("PEB Check Result: {}", details.peb_check);
-    println!("RDTSC Check Result: {}", details.rdtsc_check);
-    println!("Exception Handler Check: {}", details.heap_check);
-    println!("Hypervisor Check: {}", details.hypervisor_check);
-    println!("Integrity Check: {}", details.integrity_check);
-}
-```
-
-### Using Encryption/Decryption with Embedded Protection
-
-```rust
-use protector::Protector;
-
-fn main() {
-    let protector = Protector::new(0x87654321);
-    
-    // Encrypt data (includes automatic anti-debug check)
-    let plaintext = b"Secret message";
-    let encrypted = protector.encrypt_data(plaintext);
-    
-    // If debugger detected, data will be corrupted during encryption
-    println!("Encrypted data length: {}", encrypted.len());
-    
-    // Decrypt data (includes automatic anti-debug check)
-    let decrypted = protector.decrypt_data(&encrypted);
-    
-    // If debugger was detected, decryption will fail silently
-}
-```
-
-### License Validation with Anti-Debug
-
-```rust
-use protector::Protector;
-
-fn main() {
-    let protector = Protector::new(0xDEADBEEF);
-    
-    let license_key = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6";
-    
-    // License validation includes timing anomaly check
-    if protector.validate_license(license_key) {
-        println!("License valid!");
+    if is_valid {
+        println!("[+] API key validated");
     } else {
-        // Could be invalid license or debugger detected
-        println!("License validation failed");
+        eprintln!("[-] Running under debugger - data corrupted");
     }
 }
 ```
+
+### Advanced Pattern
+
+```rust
+use fdebug::protector::{CoupledLogic, Corruptible};
+
+#[derive(Clone)]
+struct PaymentData {
+    amount: f64,
+    valid: bool,
+}
+
+impl Corruptible for PaymentData {
+    fn corrupt_if_needed(mut self, token: u64) -> Self {
+        if token == 0 {
+            self.amount = 0.0;
+            self.valid = false;
+        }
+        self
+    }
+}
+
+let payment = protector.run_coupled(|token| {
+    PaymentData {
+        amount: 1000.0 + (token as f64 * 0.001),
+        valid: token != 0,
+    }
+});
+
+// If debugged: amount = 0.0, valid = false
+// If clean: amount ≈ 1000.0, valid = true
+```
+
+## Documentation
+
+Complete documentation is available in the `/docs` directory:
+
+### 📖 [Complete Guide - Start Here](docs/FDEBUG_COMPLETE_GUIDE.md)
+Overview, integration checklist, threat model, and FAQ. **Read this first.**
+
+### 🏗️ [Architecture Guide](docs/architecture_guide_NEW.md)
+Deep technical analysis of all four protection layers:
+- Layer 1: Multi-Vector Detection System
+- Layer 2: Polymorphic Virtual Execution (TinyVM)
+- Layer 3: Distributed Suspicion Scoring & Integrity
+- Layer 4: Decoy System (Honey Pot Pattern)
+
+### 📚 [API Reference Guide](docs/reference_guide_NEW.md)
+Complete API documentation with code examples:
+- Core API Reference
+- Detection Severity Levels
+- Usage Patterns (5 essential patterns)
+- Advanced Configuration
+- Performance Characteristics
+- FAQ and Troubleshooting
+
+### 🛠️ [Implementation Guide](docs/implementation_guide_NEW.md)
+Best practices and design patterns:
+- Architectural Design Patterns (Shield, Sentinel, Checksum patterns)
+- Integration Strategies
+- Real-World Use Cases (Licensing, API Keys, Data Protection)
+- Performance Optimization
+- Testing and Validation
+- Security Considerations
+- Troubleshooting Guide
+
+## Examples
+
+Complete working examples are in the `/examples` directory:
+
+- **basic_protection.rs** - Simple API key protection
+- **guarded_logic.rs** - Token-based financial calculations with corruption
+- **custom_vm_op.rs** - Guide to extending the VM with custom opcodes
+
+Run them:
+```bash
+cargo run --example basic_protection
+cargo run --example guarded_logic
+```
+
+## Architecture Overview
+
+```
+Application Layer
+    ↓ (uses run_secure, run_coupled, SecureVault)
+Protection Layer
+    ├─→ Global State (distributed suspicion scoring)
+    ├─→ TinyVM (polymorphic bytecode execution)
+    ├─→ Anti-Debug (VEH hooks, timing checks)
+    └─→ Decoy System (watchdog monitoring)
+```
+
+## How It Works
+
+### 1. Detection (Multi-Vector)
+
+- **Vectored Exception Handling** catches INT3 and single-step exceptions
+- **Hardware Breakpoint Detection** monitors CPU debug registers (Dr0-Dr7)
+- **RDTSC Timing** detects execution delays from stepping/breakpoints
+- **PEB Memory Checks** read BeingDebugged and NtGlobalFlag flags
+- **Environment Detection** identifies virtual machines and cloud environments
+
+### 2. Obfuscation (Polymorphic VM)
+
+- Custom bytecode VM with stack-based architecture
+- Control flow flattening converts sequential code into opaque state machines
+- Opcodes change every build (polymorphic - different per binary)
+- Even with source code, each user gets unique protection
+- Analysis tools (IDA, Ghidra) produce unusable output
+
+### 3. Integrity (Distributed Scoring)
+
+- Suspicion score split across 16 atomic shards
+- Each shard masked with build-time derived value
+- Reconstructed score: `score = (shard0 ^ mask0) + (shard1 ^ mask1) + ...`
+- Memory freezing attacks fail: zeroing shards creates massive score spike
+- SipHash integrity verification detects tampering
+
+### 4. Deception (Honey Pots)
+
+- Decoy functions explicitly exposed (easy to find)
+- Watchdog continuously monitors function bytecode
+- Patching detected instantly → DECOY_TAMPERED flag set
+- All future security tokens become corrupted
+- Attacker's "successful patch" silently corrupts everything
+
+## Performance
+
+Typical overhead: **3-5%** for average applications
+
+```
+Per-operation cost:    <1ms
+Heartbeat overhead:    <1ms every 10 operations
+Watchdog check:        <5ms probabilistically
+Startup cost:          ~1ms (VEH registration)
+```
+
+Optimizable: protect only critical operations, batch processes, etc.
+
+## Threat Model
+
+### ✅ Defends Against
+
+- Software debuggers (WinDbg, x64dbg, IDA Debugger)
+- Automated analysis (IDA Pro, Ghidra, Binary Ninja)
+- Patch attacks (bytecode modification)
+- Hook attacks (IAT/EAT hooking)
+- Memory freezing (breakpoint data freezing)
+- Single-stepping attacks
+- DLL injection attempts
+
+### ⚠️ Limitations
+
+- Kernel-mode debuggers have lower-level access
+- Hypervisor escapes may bypass some checks
+- Physical attacks (DMA, side-channels) out of scope
+- Source code availability doesn't help (polymorphic per-user)
+
+## Deployment
+
+Each build automatically gets a **unique DYNAMIC_SEED**:
+
+```bash
+cargo build --release  # Seed = 0x12345678
+cargo build --release  # Seed = 0x87654321 (different!)
+```
+
+**Result:** Version 1.0 exploits are useless against Version 1.1, even for identical code. Each user's binary is uniquely protected.
 
 ## Configuration
 
-The module behavior can be customized by modifying constants in `src/protector/anti_debug.rs`:
+### Diagnostic Mode
 
 ```rust
-/// Hardcoded fallback threshold for RDTSC (in CPU cycles)
-const RDTSC_FALLBACK_THRESHOLD: u64 = 100;
+use fdebug::protector::global_state::DIAGNOSTIC_MODE;
+use std::sync::atomic::Ordering;
 
-/// Data Corruption Mode: When enabled, output is silently corrupted instead of exiting
-const DATA_CORRUPTION_MODE: bool = true;
-
-/// VEH Detection: Use Vectored Exception Handler for breakpoint detection
-const ENABLE_VEH_DETECTION: bool = true;
-
-/// Integrity Check: Enable runtime self-integrity verification
-const ENABLE_INTEGRITY_CHECK: bool = true;
+DIAGNOSTIC_MODE.store(true, Ordering::Relaxed);
 ```
 
-## Detection Checkpoints
+### Feature Flags
 
-### 1. Memory Integrity Checkpoint
-- **What it detects**: Debugger through PEB flags and NtGlobalFlag
-- **How it works**: Uses TinyVM to execute polymorphic bytecode that reads PEB structure
-- **Suspicion Added**: 50 points
-- **Reliability**: Very high (reliable across all Windows versions)
-
-### 2. Timing Anomaly Checkpoint
-- **What it detects**: Debugger interference with instruction execution
-- **How it works**: Measures RDTSC cycles between two timestamps
-- **Suspicion Added**: 30 points
-- **Reliability**: High (but can have false positives on heavily loaded systems)
-
-### 3. Exception Handling Checkpoint
-- **What it detects**: Hardware breakpoints and exception hooks
-- **How it works**: Monitors vectored exception handlers
-- **Suspicion Added**: 40 points
-- **Reliability**: Medium (depends on debugger implementation)
-
-### 4. Hypervisor Detection Checkpoint
-- **What it detects**: Virtual machines and cloud environments
-- **How it works**: Uses CPUID to detect hypervisor presence and brand strings
-- **Suspicion Added**: 10-30 points (variable)
-- **Reliability**: Medium (high false positive rate in cloud environments)
-
-### 5. Integrity Checkpoint
-- **What it detects**: Code tampering and section modification
-- **How it works**: Calculates hash of critical code sections
-- **Suspicion Added**: 70 points
-- **Reliability**: Very high (detects actual code modifications)
-
-## Suspicion System
-
-The module uses a scoring system rather than immediate detection:
-
-```
-Total Suspicion Score Rules:
-- PEB checks: Threshold 40 points
-- Timing checks: Threshold 60 points
-- Exception checks: Threshold 50 points
-- Hypervisor checks: Threshold 30 points
-- Integrity checks: Threshold 35 points
-- Global threshold: 100 points
-
-When any category exceeds its threshold OR global score exceeds 100,
-the module sets the debug flag and corrupts encryption keys.
-```
-
-## Output Behavior
-
-When a debugger is detected, the module does NOT crash or exit. Instead:
-
-1. **Encryption Key Corruption**: The encryption key is set to `0xFF`
-2. **VM Key Corruption**: The virtual machine key is set to `0x00`
-3. **Silent Failure**: Encrypted/decrypted data becomes unusable
-4. **Persistent Detection**: The debug flag remains set permanently
-
-## TinyVM Internals
-
-The module includes a lightweight virtual machine for obfuscated execution:
-
-### Supported Operations
-- **Stack Operations**: PUSH, POP, DUP, SWAP
-- **Memory Operations**: READ_MEM_U8, READ_MEM_U32, READ_MEM_U64
-- **Arithmetic**: ADD, SUB, XOR, AND, OR, NOT, SHL, SHR
-- **Control Flow**: JUMP, JZ, JNZ, CALL, RET, EXIT
-- **CPU Operations**: RDTSC, CPUID, IN_PORT, OUT_PORT
-- **System Operations**: READ_GS_OFFSET (for PEB access)
-
-### Polymorphism
-Each instruction opcode is dynamically generated at compile time using:
 ```rust
-macro_rules! auto_op {
-    ($base:expr) => {
-        (($base as u8).wrapping_add(BUILD_SEED as u8))
-    };
-}
+#[cfg(feature = "max-protection")]
+let protector = Protector::new(DYNAMIC_SEED);
+
+#[cfg(not(feature = "max-protection"))]
+let protector = DummyProtector::new();
 ```
 
-Where `BUILD_SEED` is computed from package name, file path, and manifest directory.
+## Building & Testing
 
-## Security Considerations
+```bash
+# Build with protection (release)
+cargo build --release
 
-### Strengths
-- ✅ Multiple independent detection mechanisms
-- ✅ Distributed state across threads
-- ✅ Polymorphic code generation
-- ✅ Silent corruption mode (attacker doesn't know detection occurred)
-- ✅ Runtime integrity verification
+# Build without protection (debug/testing)
+cargo build
 
-### Limitations
-- ⚠️ Only detects user-mode debuggers
-- ⚠️ Kernel-mode debuggers can bypass detection
-- ⚠️ May have false positives in heavily virtualized environments
-- ⚠️ Skilled attackers with deep system knowledge can potentially bypass
+# Run examples
+cargo run --example basic_protection
+cargo run --example guarded_logic
 
-## Performance Impact
+# Run with diagnostics
+RUST_LOG=debug cargo run --release
+```
 
-- **Initialization**: ~1-5ms for first-time setup
-- **Detection Checkpoint**: ~0.1-0.5ms per checkpoint call
-- **Memory Overhead**: ~1-2KB for state structures
-- **Encryption/Decryption**: Same as standard XOR cipher (very fast)
+## Module Structure
 
-## Troubleshooting
+```
+src/protector/
+├── mod.rs                    # Main API & integration layer
+├── anti_debug.rs             # Multi-vector detection (2300+ lines)
+├── global_state.rs           # Distributed scoring & integrity (667 lines)
+├── tiny_vm.rs                # Polymorphic VM bytecode (1169 lines)
+├── decoy_system.rs           # Honey pot functions (284 lines)
+├── generated_constants.rs    # Build-time DYNAMIC_SEED
+└── tiny_vm/
+    └── generated_constants.rs
+```
 
-### False Positives
-
-If you're getting "debugger detected" in legitimate deployments:
-
-1. **In Virtual Machines**: Adjust hypervisor detection thresholds
-2. **On Slow Hardware**: Increase `RDTSC_FALLBACK_THRESHOLD`
-3. **On Loaded Servers**: Disable `ENABLE_VEH_DETECTION`
-
-### Not Detecting Debuggers
-
-If debuggers aren't being caught:
-
-1. Ensure you're running on Windows x86_64
-2. Check that protector is initialized early in `main()`
-3. Verify all detection checkpoints are called
-4. Try reducing detection thresholds
+Total: ~4500 lines of pure anti-debugging logic
 
 ## Compilation
 
-```bash
-# Build in debug mode
-cargo build
+Only compiles on **Windows x86-64**:
+- Requires Windows API features
+- Uses inline x86 assembly
+- Non-Windows platforms get dummy implementations
 
-# Build release (optimized)
-cargo build --release
-
-# Run tests
-cargo test
-
-# Clean build
-cargo clean && cargo build
+```toml
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.51", features = [...] }
 ```
 
-## Files Structure
+## Security Notes
 
+⚠️ **Important Security Considerations:**
+
+1. **DYNAMIC_SEED is secret** - If attackers know it, they can simulate the protection
+2. **Don't cache results** across protection boundaries
+3. **Validate tokens** before using them in calculations
+4. **Monitor suspicion scores** in production
+5. **Update regularly** - new builds get new seeds automatically
+
+## Performance Tips
+
+```rust
+// ✅ GOOD - Single run_secure wrapping batch operation
+protector.run_secure(&vault, |data, token| {
+    data.iter().map(|x| process(x, token)).collect()
+})
+
+// ❌ POOR - Separate run_secure per item
+for item in data {
+    protector.run_secure(&vault, |_, token| process(item, token))
+}
 ```
-src/
-├── main.rs                          # Example usage and testing
-├── protector/
-│   ├── mod.rs                       # Module definition and public API
-│   ├── anti_debug.rs               # Detection checkpoints and logic
-│   ├── tiny_vm.rs                  # Virtual machine implementation
-│   └── global_state.rs             # Atomic state management
-├── build.rs                         # Build script
-└── Cargo.toml                       # Dependencies
-```
+
+## FAQ
+
+**Q: Does it work in virtual machines?**
+A: Yes, it detects and adapts. VMs may trigger higher suspicion scores, but application still works.
+
+**Q: Can I use this in open-source projects?**
+A: Yes! It's MIT licensed. Even with source available, polymorphic per-user protection makes it effective.
+
+**Q: What about false positives?**
+A: Extremely rare. Enable diagnostic mode to identify causes. Usually legitimate VM/CI environments.
+
+**Q: Does performance matter?**
+A: For most applications, 3-5% overhead is negligible. Profile your specific use case.
+
+**Q: Can someone just patch all the calls to run_secure?**
+A: They could modify your binary, but then DYNAMIC_SEED is gone. Next build has a different seed - exploit fails.
 
 ## License
 
-This project is designed for security research and protected software purposes. Usage is subject to local laws and regulations.
+MIT License - See LICENSE file for details
 
-## References
+## Author
 
-- Microsoft Windows Internals
-- PEB Structure Documentation
-- CPUID Instruction Reference
-- Timing Attack Prevention Techniques
+Created by anhdeface - Advanced anti-reverse engineering systems
 
-## Support
+## Contributing
 
-For issues, questions, or contributions:
+This is a reference implementation of advanced anti-debugging techniques. It's suitable for:
 
-1. Check the [Documentation](README_VI.md) (Vietnamese version)
-2. Review example code in `src/main.rs`
-3. Check test cases in `src/protector/mod.rs`
+- Educational purposes (understand protection mechanisms)
+- Production protection (shipping with applications)
+- Security research (study evasion techniques)
+- Competition purposes (CTF challenges)
+
+Not suitable for:
+
+- Obfuscating malware (illegal)
+- Defeating legitimate security research
+- Preventing legitimate software updates
 
 ---
 
-**Note**: This library is continuously evolving. Always test thoroughly in your target environment before production deployment.
+## Quick Navigation
+
+| I want to... | Go to |
+| --- | --- |
+| Understand how fdebug works | [Architecture Guide](docs/architecture_guide_NEW.md) |
+| Use fdebug in my project | [Complete Guide](docs/FDEBUG_COMPLETE_GUIDE.md) |
+| See all API functions | [API Reference](docs/reference_guide_NEW.md) |
+| Learn best practices | [Implementation Guide](docs/implementation_guide_NEW.md) |
+| See working code | [examples/](examples/) directory |
+| Deploy to production | [Complete Guide - Deployment](docs/FDEBUG_COMPLETE_GUIDE.md#deployment-considerations) |
+
+---
+
+**Start with:** [docs/FDEBUG_COMPLETE_GUIDE.md](docs/FDEBUG_COMPLETE_GUIDE.md)

@@ -2,4 +2,4 @@
 // Do not edit manually
 
 // Dynamic seed generated at build time for polymorphic opcodes
-pub const DYNAMIC_SEED: u8 = 0xC6;
+pub const DYNAMIC_SEED: u8 = 0x90;

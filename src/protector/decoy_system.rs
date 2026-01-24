@@ -16,17 +16,18 @@ static TAMPER_DETECTION_COUNT: AtomicUsize = AtomicUsize::new(0);
 static EXPECTED_KERNEL_DEBUGGER_HASH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static EXPECTED_PROCESS_DEBUGGED_HASH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static EXPECTED_ANTI_TAMPER_HASH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
+#[inline(never)]
+#[no_mangle]
 /// Fake kernel debugger check - looks important but does minimal checking
-pub fn check_kernel_debugger() -> bool {
-    // This function looks important but only does a basic check
-    // If a hacker patches this to always return false, they'll trigger tamper detection
+fn check_kernel_debugger() -> bool {
+    // Prevent compiler from stripping this function or its logic
+    std::hint::black_box(());
 
     // Basic check that's easy to bypass but looks important
-    let result = unsafe {
+    let result = std::hint::black_box(unsafe {
         use windows::Win32::System::Diagnostics::Debug::IsDebuggerPresent;
         IsDebuggerPresent().as_bool()
-    };
+    });
 
     // Perform tamper detection after the check
     detect_decoy_tampering("check_kernel_debugger");
@@ -34,16 +35,17 @@ pub fn check_kernel_debugger() -> bool {
     result // Return the result directly
 }
 
+#[inline(never)]
+#[no_mangle]
 /// Fake process debugging check - another decoy that looks critical
-pub fn is_process_being_debugged() -> bool {
-    // Another function that looks important but does basic checking
-    // Designed to be patched by hackers, which triggers our detection
+fn is_process_being_debugged() -> bool {
+    std::hint::black_box(());
 
     // Simple check that's easy to fool but looks important
-    let result = unsafe {
+    let result = std::hint::black_box(unsafe {
         use windows::Win32::System::Diagnostics::Debug::IsDebuggerPresent;
         IsDebuggerPresent().as_bool()
-    };
+    });
 
     // Perform tamper detection after the check
     detect_decoy_tampering("is_process_being_debugged");
@@ -51,17 +53,18 @@ pub fn is_process_being_debugged() -> bool {
     !result // Return true if no debugger detected (opposite to confuse)
 }
 
+#[inline(never)]
+#[no_mangle]
 /// Fake anti-tamper validation - sounds important but is just a trap
-pub fn anti_tamper_validation() -> bool {
-    // This function sounds like it does important validation
-    // but it's just another trap for hackers to fall into
+fn anti_tamper_validation() -> bool {
+    std::hint::black_box(());
 
     // Simple check that looks complex
     let entropy = get_cpu_entropy();
     let fake_threshold = 0x12345678u32;
 
     // This check is meaningless but looks important
-    let result = (entropy ^ fake_threshold) != 0;
+    let result = std::hint::black_box((entropy ^ fake_threshold) != 0);
 
     // Perform tamper detection after the check
     detect_decoy_tampering("anti_tamper_validation");
@@ -83,8 +86,9 @@ fn detect_decoy_tampering(function_name: &str) {
     // Check for common patch patterns first (this catches RET patches immediately)
     let is_patched = is_function_patched(func_ptr);
 
-    // Calculate a simple checksum of the first few bytes of the function
-    let checksum = calculate_checksum(func_ptr, 10); // Check first 10 bytes for faster detection
+    // Calculate a simple checksum of the function prologue (first 16 bytes)
+    // Using a fixed 16-byte buffer for stability across builds
+    let checksum = calculate_checksum(func_ptr, 16); 
 
     // Compare with expected checksums
     let is_checksum_modified = match function_name {
@@ -230,13 +234,13 @@ fn get_cpu_entropy() -> u32 {
 fn add_tamper_suspicion() {
     // Call the global state function to add suspicion
     // Use a random value to make it less predictable
-    use crate::protector::global_state;
-    let random_suspicion = (get_cpu_entropy() % 100) + 200; // Random value between 200-299
-    global_state::add_suspicion(random_suspicion, 0); // Random suspicion score for tampering (category 0 for tampering)
+    use crate::protector::global_state::DetectionSeverity;
+    // We treat tampering as high severity
+    crate::protector::global_state::add_suspicion(DetectionSeverity::High);
 }
 
 /// Check if any decoy function has been tampered with
-pub fn is_decoy_tampered() -> bool {
+fn is_decoy_tampered() -> bool {
     DECOY_TAMPERED.load(Ordering::SeqCst)
 }
 
