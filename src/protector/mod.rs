@@ -12,7 +12,17 @@
 
 use std::cell::RefCell;
 use std::sync::atomic::Ordering;
-// DYNAMIC_SEED is re-exported later
+
+// Runtime Seed Reconstruction Modules
+#[cfg(target_os = "windows")]
+mod hardware_entropy;
+#[cfg(target_os = "windows")]
+mod pe_integrity;
+
+pub mod seed_orchestrator;
+
+// Re-export seed reconstruction functions for all platforms
+pub use crate::protector::seed_orchestrator::{get_dynamic_seed, get_dynamic_seed_u8};
 
 #[cfg(target_os = "windows")]
 mod tiny_vm;
@@ -28,17 +38,10 @@ pub use tiny_vm::*;
 #[cfg(target_os = "windows")]
 pub use anti_debug::*;
 
-// Macro to quickly set up anti-debug protection in a new project
-// For non-Windows platforms, provide dummy implementations
 #[cfg(not(target_os = "windows"))]
 pub struct Protector {
     _seed: u32,
 }
-
-#[cfg(not(target_os = "windows"))]
-pub(crate) mod generated_constants;
-#[cfg(not(target_os = "windows"))]
-pub use generated_constants::DYNAMIC_SEED;
 
 #[cfg(not(target_os = "windows"))]
 impl Protector {
@@ -240,8 +243,8 @@ impl<T> ShieldedExecution<T> for Protector {
         let score = global_state::get_suspicion_score();
         let poison = global_state::POISON_SEED.load(Ordering::SeqCst);
         
-        // Theoretical base key derived from build-time seed
-        let mut transformation_key = (global_state::DYNAMIC_SEED as u64) ^ 0x61C8864680B583EB;
+        // Theoretical base key derived from runtime-reconstructed seed
+        let mut transformation_key = (seed_orchestrator::get_dynamic_seed() as u64) ^ 0x61C8864680B583EB;
 
         // Mathematical corruption: If score > 0, the key is structurally altered.
         // We use wrapping arithmetic and non-linear rotations to ensure silent failure.
@@ -284,7 +287,6 @@ pub use crate::protector::global_state::{
     get_combined_score,
     recalculate_global_integrity,
     initialize_veh_protection,
-    DYNAMIC_SEED,
 };
 
 // ============================================================================
@@ -361,7 +363,7 @@ fn apply_contextual_corruption<T>(value: T) -> T {
 }
 
 /// Trait for types that can be corrupted in context-aware ways
-trait ContextualCorruption {
+pub(crate) trait ContextualCorruption {
     fn corrupt_if_needed(self) -> Self;
 }
 
@@ -465,7 +467,7 @@ fn opaque_predicate_eq(value: u32, expected: u32) -> bool {
     let result = (value ^ expected).count_ones() == 0;
 
     // Additional obfuscation: add a check that doesn't change the result
-    let extra_check = (value.wrapping_sub(expected) == 0);
+    let extra_check = value.wrapping_sub(expected) == 0;
 
     result && extra_check
 }

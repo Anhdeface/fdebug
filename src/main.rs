@@ -1,11 +1,11 @@
 mod protector;
-use crate::protector::{Protector, SecureVault, ShieldedExecution, DYNAMIC_SEED};
+use crate::protector::{Protector, SecureVault, ShieldedExecution, get_dynamic_seed};
 
 /// Entry point - demonstrates the Mandatory Security Enforcement Layer
 fn main() {
     // 1. Initialize the Enforcer
     // This triggers decentralized checkpoints and initializes sharded state
-    let protector = Protector::new(DYNAMIC_SEED);
+    let protector = Protector::new(get_dynamic_seed());
     
     println!("[*] Mandatory Security Enforcement Active");
     println!("[*] Detection Architecture: Decentralized Sharding + TLS Pre-emption");

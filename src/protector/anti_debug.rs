@@ -7,16 +7,22 @@
     unused_macros,
     asm_sub_register
 )]
-
-//! Anti-debugging module with distributed detection mechanisms
+#[allow(non_snake_case)]
+///! Anti-debugging module with distributed detection mechanisms
 // github.com/anhdeface
 // MIT License
 use std::cell::RefCell;
-use std::time::Instant;
 use crate::protector::tiny_vm::{VmOp, vm_execute};
 
-lazy_static::lazy_static! {
-    static ref LOAD_TIME: Instant = Instant::now();
+
+use std::sync::OnceLock;
+use std::time::Instant;
+
+
+static LOAD_TIME: OnceLock<Instant> = OnceLock::new();
+
+fn get_load_time() -> &'static Instant {
+    LOAD_TIME.get_or_init(Instant::now)
 }
 
 // Manual FFI and constants for VEH to ensure reliability across environments
@@ -26,12 +32,14 @@ extern "system" {
 }
 
 #[repr(C)]
+#[allow(non_snake_case)]
 pub struct EXCEPTION_POINTERS {
     pub ExceptionRecord: *mut EXCEPTION_RECORD,
     pub ContextRecord: *mut CONTEXT,
 }
 
 #[repr(C)]
+#[allow(non_snake_case)]
 pub struct EXCEPTION_RECORD {
     pub ExceptionCode: u32,
     pub ExceptionFlags: u32,
@@ -43,6 +51,7 @@ pub struct EXCEPTION_RECORD {
 
 #[repr(C)]
 #[cfg(target_arch = "x86_64")]
+#[allow(non_snake_case)]
 pub struct CONTEXT {
     pub P1Home: u64, pub P2Home: u64, pub P3Home: u64, pub P4Home: u64, pub P5Home: u64, pub P6Home: u64,
     pub ContextFlags: u32, pub MxCsr: u32,
@@ -711,15 +720,15 @@ pub fn checkpoint_memory_integrity() -> bool {
     let encryption_key = compute_encryption_key();
     let memory_check_bytecode = [
         // Step 1: PUSH PEB Address
-        (VmOp::OP_READ_GS_OFFSET as u8) ^ encryption_key,
+        VmOp::op_read_gs_offset() ^ encryption_key,
         0x60 ^ encryption_key,  // GS:[0x60] = PEB pointer
 
         // Step 2: DUP địa chỉ đó
-        (VmOp::OP_DUP as u8) ^ encryption_key,
+        VmOp::op_dup() ^ encryption_key,
 
         // Step 3: Dùng bản sao thứ nhất để đọc BeingDebugged
         // Load offset for BeingDebugged (0x02)
-        (VmOp::OP_LOAD_IMM as u8) ^ encryption_key,
+        VmOp::op_load_imm() ^ encryption_key,
         (0x02u64.to_le_bytes()[0]) ^ encryption_key,
         (0x02u64.to_le_bytes()[1]) ^ encryption_key,
         (0x02u64.to_le_bytes()[2]) ^ encryption_key,
@@ -730,37 +739,37 @@ pub fn checkpoint_memory_integrity() -> bool {
         (0x02u64.to_le_bytes()[7]) ^ encryption_key,
 
         // Add to get address of BeingDebugged field
-        (VmOp::OP_ADD as u8) ^ encryption_key,
+        VmOp::op_add() ^ encryption_key,
 
         // Read 1 byte value from memory at that address (BeingDebugged flag)
-        (VmOp::OP_READ_MEM_U8 as u8) ^ encryption_key,
+        VmOp::op_read_mem_u8() ^ encryption_key,
 
         // Step 4: SWAP để đưa bản sao thứ hai lên đầu
-        (VmOp::OP_SWAP as u8) ^ encryption_key,
+        VmOp::op_swap() ^ encryption_key,
 
         // Step 5: Dùng bản sao thứ hai để đọc NtGlobalFlag
         // Load offset for NtGlobalFlag (0xBC)
-        (VmOp::OP_LOAD_IMM as u8) ^ encryption_key,
-        (0xBCu64.to_le_bytes()[0]) ^ encryption_key,
-        (0xBCu64.to_le_bytes()[1]) ^ encryption_key,
-        (0xBCu64.to_le_bytes()[2]) ^ encryption_key,
-        (0xBCu64.to_le_bytes()[3]) ^ encryption_key,
-        (0xBCu64.to_le_bytes()[4]) ^ encryption_key,
-        (0xBCu64.to_le_bytes()[5]) ^ encryption_key,
-        (0xBCu64.to_le_bytes()[6]) ^ encryption_key,
-        (0xBCu64.to_le_bytes()[7]) ^ encryption_key,
+        VmOp::op_load_imm() ^ encryption_key,
+        (0x0BCu64.to_le_bytes()[0]) ^ encryption_key,
+        (0x0BCu64.to_le_bytes()[1]) ^ encryption_key,
+        (0x0BCu64.to_le_bytes()[2]) ^ encryption_key,
+        (0x0BCu64.to_le_bytes()[3]) ^ encryption_key,
+        (0x0BCu64.to_le_bytes()[4]) ^ encryption_key,
+        (0x0BCu64.to_le_bytes()[5]) ^ encryption_key,
+        (0x0BCu64.to_le_bytes()[6]) ^ encryption_key,
+        (0x0BCu64.to_le_bytes()[7]) ^ encryption_key,
 
         // Add to get address of NtGlobalFlag
-        (VmOp::OP_ADD as u8) ^ encryption_key,
+        VmOp::op_add() ^ encryption_key,
 
         // Read 4 byte value from memory at that address (NtGlobalFlag)
-        (VmOp::OP_READ_MEM_U32 as u8) ^ encryption_key,
+        VmOp::op_read_mem_u32() ^ encryption_key,
 
         // Step 6: ADD cả hai kết quả lại
-        (VmOp::OP_ADD as u8) ^ encryption_key,
+        VmOp::op_add() ^ encryption_key,
 
         // Exit VM with result (top of stack)
-        (VmOp::OP_EXIT as u8) ^ encryption_key,
+        VmOp::op_exit() ^ encryption_key,
     ];
 
     // Execute the bytecode in the VM with a context key
@@ -852,7 +861,7 @@ pub fn checkpoint_timing_anomaly() -> bool {
     use crate::protector::global_state::*;
 
     // 1. Warm-up Period: Disable suspicion for first 5 seconds
-    if LOAD_TIME.elapsed().as_secs() < 5 {
+    if get_load_time().elapsed().as_secs() < 5 {
         return false;
     }
 
@@ -2194,18 +2203,19 @@ pub static P_TLS_CALLBACK: unsafe extern "system" fn(*mut u8, u32, *mut u8) = tl
 unsafe extern "system" fn tls_callback_entry(_image: *mut u8, reason: u32, _reserved: *mut u8) {
     if reason == 1 { // DLL_PROCESS_ATTACH
         // Implement mandatory logic using OP_EARLY_BIRD across TinyVM
-        let enc_key = (DYNAMIC_SEED & 0xFF) as u8;
+        let seed = crate::protector::seed_orchestrator::get_dynamic_seed();
+        let enc_key = (seed & 0xFF) as u8;
         let bytecode = [
-            VmOp::OP_EARLY_BIRD as u8 ^ enc_key,
-            VmOp::OP_EXIT as u8 ^ enc_key
+            VmOp::op_early_bird() ^ enc_key,
+            VmOp::op_exit() ^ enc_key
         ];
         
-        let result = vm_execute(&bytecode, enc_key, DYNAMIC_SEED as u64);
+        let result = vm_execute(&bytecode, enc_key, seed as u64);
         
         if result != 0 {
-            // SILENT POISONING: XOR POISON_SEED with constant derived from DYNAMIC_SEED
+            // SILENT POISONING: XOR POISON_SEED with constant derived from reconstructed seed
             // Mathematical transformation: ((SEED * 0x61C8864680B583EB) >> 32) ^ 0xDEADBEEF
-            let poison_val = ((DYNAMIC_SEED as u64).wrapping_mul(0x61C8864680B583EB) >> 32) ^ 0xDEADBEEF;
+            let poison_val = ((seed as u64).wrapping_mul(0x61C8864680B583EB) >> 32) ^ 0xDEADBEEF;
             POISON_SEED.fetch_xor(poison_val, Ordering::SeqCst);
             
             // Add critical suspicion
@@ -2242,7 +2252,7 @@ extern "system" fn veh_handler(exception_info: *mut EXCEPTION_POINTERS) -> i32 {
     let address = unsafe { (*record).ExceptionAddress as usize };
 
     // 1. Warm-up verification
-    if LOAD_TIME.elapsed().as_secs() < 2 {
+    if get_load_time().elapsed().as_secs() < 2 {
         return EXCEPTION_CONTINUE_SEARCH;
     }
 

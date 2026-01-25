@@ -15,6 +15,18 @@ FDebug Protection:      Debugger detected → Silent Corruption →
                         debugging non-existent bugs → Attacker gives up
 ```
 
+### 🆕 Latest Update: Seed Orchestrator Architecture
+
+The system now implements **runtime seed reconstruction** from three independent entropy sources instead of static constants:
+
+- **Build-Time Seed**: Unique random value per binary compilation
+- **Hardware Entropy**: CPU-specific fingerprint from CPUID
+- **PE Integrity Hash**: Checksum of executable code sections
+
+**Result**: Each user gets uniquely protected binaries, different even on the same hardware if code changes. No static keys to extract from memory or binary analysis.
+
+See [Architecture Layer 5 Documentation](#-architecture-layer-5--seed-orchestrator) below for details.
+
 ## Key Features
 
 | Feature | Implementation | Effect |
@@ -36,10 +48,11 @@ FDebug Protection:      Debugger detected → Silent Corruption →
 fdebug = { path = "./fdebug" }
 
 // main.rs
-use fdebug::protector::{Protector, DYNAMIC_SEED};
+use fdebug::protector::{Protector, get_dynamic_seed};
 
 fn main() {
-    let protector = Protector::new(DYNAMIC_SEED);
+    let seed = get_dynamic_seed();  // Runtime-reconstructed from three sources
+    let protector = Protector::new(seed);
     println!("[+] Anti-debug protection initialized");
 }
 ```
@@ -47,10 +60,11 @@ fn main() {
 ### Basic Usage
 
 ```rust
-use fdebug::protector::{Protector, SecureVault, ShieldedExecution};
+use fdebug::protector::{Protector, SecureVault, ShieldedExecution, get_dynamic_seed};
 
 fn main() {
-    let protector = Protector::new(DYNAMIC_SEED);
+    let seed = get_dynamic_seed();
+    let protector = Protector::new(seed);
     
     // Protect sensitive data
     let api_key = SecureVault::new("sk_live_secret_key".to_string());
@@ -71,7 +85,7 @@ fn main() {
 ### Advanced Pattern
 
 ```rust
-use fdebug::protector::{CoupledLogic, Corruptible};
+use fdebug::protector::{CoupledLogic, Corruptible, get_dynamic_seed};
 
 #[derive(Clone)]
 struct PaymentData {
@@ -89,6 +103,7 @@ impl Corruptible for PaymentData {
     }
 }
 
+let protector = Protector::new(get_dynamic_seed());
 let payment = protector.run_coupled(|token| {
     PaymentData {
         amount: 1000.0 + (token as f64 * 0.001),
@@ -102,20 +117,30 @@ let payment = protector.run_coupled(|token| {
 
 ## Documentation
 
-Complete documentation is available in the `/docs` directory:
+Comprehensive documentation is available in the `/docs` directory:
 
-### 📖 [Complete Guide - Start Here](docs/FDEBUG_COMPLETE_GUIDE.md)
-Overview, integration checklist, threat model, and FAQ. **Read this first.**
+### 📖 [Complete Integration Guide](docs/FDEBUG_COMPLETE_GUIDE.md)
+Overview, integration checklist, threat model, and FAQ. **Start here if new to fdebug.**
 
 ### 🏗️ [Architecture Guide](docs/architecture_guide_NEW.md)
-Deep technical analysis of all four protection layers:
-- Layer 1: Multi-Vector Detection System
-- Layer 2: Polymorphic Virtual Execution (TinyVM)
-- Layer 3: Distributed Suspicion Scoring & Integrity
-- Layer 4: Decoy System (Honey Pot Pattern)
+Deep technical analysis of all **five protection layers**:
+- **Layer 1**: Seed Orchestrator & Entropy Reconstruction ✨ **NEW**
+- **Layer 2**: Multi-Vector Detection System
+- **Layer 3**: Polymorphic Virtual Execution (TinyVM)
+- **Layer 4**: Distributed Suspicion Scoring & Integrity
+- **Layer 5**: Decoy System (Honey Pot Pattern)
+
+### 🔐 [Architecture Layer 5 - Seed Orchestrator](docs/ARCHITECTURE_LAYER5.md) ✨ **NEW**
+Detailed explanation of runtime seed reconstruction:
+- Three entropy shards (Build-Time, Hardware, PE Integrity)
+- Avalanche mixing and XOR composition
+- Polymorphism across users and hardware
+- Performance characteristics (50-100μs first call, then cached)
+- Defense against static analysis and memory attacks
 
 ### 📚 [API Reference Guide](docs/reference_guide_NEW.md)
 Complete API documentation with code examples:
+- Quick Start (updated with `get_dynamic_seed()`)
 - Core API Reference
 - Detection Severity Levels
 - Usage Patterns (5 essential patterns)
@@ -125,13 +150,36 @@ Complete API documentation with code examples:
 
 ### 🛠️ [Implementation Guide](docs/implementation_guide_NEW.md)
 Best practices and design patterns:
-- Architectural Design Patterns (Shield, Sentinel, Checksum patterns)
+- Architectural Design Patterns (Shield, Sentinel, Checksum)
 - Integration Strategies
 - Real-World Use Cases (Licensing, API Keys, Data Protection)
 - Performance Optimization
 - Testing and Validation
 - Security Considerations
 - Troubleshooting Guide
+
+### � [Build Guide - Custom Entropy Setup](docs/BUILD_GUIDE.md) ✨ **NEW**
+Complete guide for developers customizing the build system:
+- Understanding fdebug's three-shard entropy system
+- How `build.rs` generates Shard 1 (Build-Time Seed)
+- Five customization patterns (Deterministic, High-Entropy, Custom Secrets, etc.)
+- Integration with CI/CD pipelines
+- Best practices and troubleshooting
+- Real-world code examples with detailed comments
+
+### �📋 [Documentation Updates Summary](docs/DOCUMENTATION_UPDATE_SUMMARY.md) ✨ **NEW**
+Complete changelog of recent updates:
+- Summary of Seed Orchestrator changes
+- Before/after code examples
+- All updated files and modifications
+- Integration points explained
+
+### 📝 [Updates & Change Guide](docs/UPDATES.md) ✨ **NEW**
+Detailed technical guide for developers:
+- Code changes explained
+- Module structure
+- Testing validation
+- Consistency guidelines
 
 ## Examples
 
@@ -153,15 +201,35 @@ cargo run --example guarded_logic
 Application Layer
     ↓ (uses run_secure, run_coupled, SecureVault)
 Protection Layer
-    ├─→ Global State (distributed suspicion scoring)
-    ├─→ TinyVM (polymorphic bytecode execution)
-    ├─→ Anti-Debug (VEH hooks, timing checks)
-    └─→ Decoy System (watchdog monitoring)
+    ├─→ Layer 5: Decoy System (watchdog monitoring, honey traps)
+    ├─→ Layer 4: Integrity (distributed shards, SipHash verification)
+    ├─→ Layer 3: Obfuscation (polymorphic TinyVM, control flow flattening)
+    ├─→ Layer 2: Detection (VEH hooks, timing, hardware BP, PEB checks)
+    └─→ Layer 1: Entropy (Seed Orchestrator - runtime seed reconstruction)
 ```
 
 ## How It Works
 
-### 1. Detection (Multi-Vector)
+### Layer 1: Seed Orchestrator (Foundation) ✨ **NEW**
+
+**Runtime seed reconstruction from three entropy sources:**
+
+- **Build-Time Seed** (random per compilation): Each binary gets unique value
+- **Hardware Entropy** (CPU fingerprint): CPUID data makes seed hardware-specific  
+- **PE Integrity Hash** (code checksum): Any code modification invalidates seed
+
+**Formula**: `FINAL_SEED = avalanche_mix(BUILD_SEED ^ HW_ENTROPY ^ PE_HASH)`
+
+**Result**: 
+- No static keys to extract from memory
+- Each build gets unique opcode values
+- Same binary runs differently on different CPUs
+- Code patches instantly detected
+- Polymorphic per-user, per-hardware-platform
+
+### Layer 2: Detection (Multi-Vector)
+
+### Layer 2: Detection (Multi-Vector)
 
 - **Vectored Exception Handling** catches INT3 and single-step exceptions
 - **Hardware Breakpoint Detection** monitors CPU debug registers (Dr0-Dr7)
@@ -169,15 +237,16 @@ Protection Layer
 - **PEB Memory Checks** read BeingDebugged and NtGlobalFlag flags
 - **Environment Detection** identifies virtual machines and cloud environments
 
-### 2. Obfuscation (Polymorphic VM)
+### Layer 3: Obfuscation (Polymorphic VM)
 
 - Custom bytecode VM with stack-based architecture
 - Control flow flattening converts sequential code into opaque state machines
 - Opcodes change every build (polymorphic - different per binary)
+- Derived from runtime-reconstructed seed via `auto_op!()` macro
 - Even with source code, each user gets unique protection
 - Analysis tools (IDA, Ghidra) produce unusable output
 
-### 3. Integrity (Distributed Scoring)
+### Layer 4: Integrity (Distributed Scoring)
 
 - Suspicion score split across 16 atomic shards
 - Each shard masked with build-time derived value
@@ -185,7 +254,7 @@ Protection Layer
 - Memory freezing attacks fail: zeroing shards creates massive score spike
 - SipHash integrity verification detects tampering
 
-### 4. Deception (Honey Pots)
+### Layer 5: Deception (Honey Pots)
 
 - Decoy functions explicitly exposed (easy to find)
 - Watchdog continuously monitors function bytecode
@@ -227,16 +296,38 @@ Optimizable: protect only critical operations, batch processes, etc.
 
 ## Deployment
 
-Each build automatically gets a **unique DYNAMIC_SEED**:
+Each build automatically generates a **unique runtime seed** reconstructed from three sources:
 
 ```bash
-cargo build --release  # Seed = 0x12345678
-cargo build --release  # Seed = 0x87654321 (different!)
+cargo build --release  
+# BUILD_SEED = random value (unique)
+# HW_ENTROPY = your CPU fingerprint
+# PE_HASH = your code checksum
+# FINAL_SEED = avalanche_mix(BUILD ^ HW ^ PE)
+
+cargo build --release  
+# BUILD_SEED = different random value!
+# (Even on same hardware, different binary)
 ```
 
-**Result:** Version 1.0 exploits are useless against Version 1.1, even for identical code. Each user's binary is uniquely protected.
+**Result:** Version 1.0 exploits are useless against Version 1.1. Each user's binary is uniquely protected, and any code modification invalidates all security tokens.
+
+See [Seed Orchestrator Documentation](docs/ARCHITECTURE_LAYER5.md) for technical details.
 
 ## Configuration
+
+### Using the Runtime-Reconstructed Seed
+
+```rust
+use fdebug::protector::{Protector, get_dynamic_seed, get_dynamic_seed_u8};
+
+// Get 32-bit seed (reconstructed at runtime)
+let seed = get_dynamic_seed();
+let protector = Protector::new(seed);
+
+// Or use u8 variant if needed
+let seed_u8 = get_dynamic_seed_u8();
+```
 
 ### Diagnostic Mode
 
@@ -245,13 +336,14 @@ use fdebug::protector::global_state::DIAGNOSTIC_MODE;
 use std::sync::atomic::Ordering;
 
 DIAGNOSTIC_MODE.store(true, Ordering::Relaxed);
+// Logs which checkpoints trigger and their suspicion scores
 ```
 
 ### Feature Flags
 
 ```rust
 #[cfg(feature = "max-protection")]
-let protector = Protector::new(DYNAMIC_SEED);
+let protector = Protector::new(get_dynamic_seed());
 
 #[cfg(not(feature = "max-protection"))]
 let protector = DummyProtector::new();
@@ -279,16 +371,18 @@ RUST_LOG=debug cargo run --release
 ```
 src/protector/
 ├── mod.rs                    # Main API & integration layer
+├── seed_orchestrator.rs      # Runtime seed reconstruction ✨ NEW
+├── hardware_entropy.rs       # Hardware fingerprint (Windows)
+├── pe_integrity.rs           # PE code section hash (Windows)
 ├── anti_debug.rs             # Multi-vector detection (2300+ lines)
 ├── global_state.rs           # Distributed scoring & integrity (667 lines)
 ├── tiny_vm.rs                # Polymorphic VM bytecode (1169 lines)
 ├── decoy_system.rs           # Honey pot functions (284 lines)
-├── generated_constants.rs    # Build-time DYNAMIC_SEED
 └── tiny_vm/
     └── generated_constants.rs
 ```
 
-Total: ~4500 lines of pure anti-debugging logic
+Total: ~4500+ lines of anti-debugging logic + Seed Orchestrator runtime reconstruction
 
 ## Compilation
 
@@ -306,11 +400,12 @@ windows = { version = "0.51", features = [...] }
 
 ⚠️ **Important Security Considerations:**
 
-1. **DYNAMIC_SEED is secret** - If attackers know it, they can simulate the protection
-2. **Don't cache results** across protection boundaries
-3. **Validate tokens** before using them in calculations
-4. **Monitor suspicion scores** in production
-5. **Update regularly** - new builds get new seeds automatically
+1. **No static secrets** - Runtime seed reconstruction means no hardcoded keys to find
+2. **Seed is hardware and build-specific** - `get_dynamic_seed()` changes based on CPU and code
+3. **Don't cache results** across protection boundaries - Always call `run_secure`/`run_coupled`
+4. **Validate tokens** before using them in calculations
+5. **Monitor suspicion scores** in production (enable diagnostic mode if needed)
+6. **Update regularly** - Each build gets new entropy automatically, defeating old exploits
 
 ## Performance Tips
 
@@ -329,19 +424,25 @@ for item in data {
 ## FAQ
 
 **Q: Does it work in virtual machines?**
-A: Yes, it detects and adapts. VMs may trigger higher suspicion scores, but application still works.
+A: Yes, it detects and adapts. VMs may trigger higher suspicion scores, but application still works. See [Detection Layer](docs/architecture_guide_NEW.md) for details.
 
 **Q: Can I use this in open-source projects?**
-A: Yes! It's MIT licensed. Even with source available, polymorphic per-user protection makes it effective.
+A: Yes! It's MIT licensed. Even with source available, runtime-reconstructed polymorphic-per-user protection makes it effective.
 
 **Q: What about false positives?**
 A: Extremely rare. Enable diagnostic mode to identify causes. Usually legitimate VM/CI environments.
 
 **Q: Does performance matter?**
-A: For most applications, 3-5% overhead is negligible. Profile your specific use case.
+A: For most applications, 3-5% overhead is negligible. Profile your specific use case. See [Performance](docs/reference_guide_NEW.md#performance-characteristics) section.
+
+**Q: How does the seed reconstruction work?**
+A: Three independent entropy sources are combined via XOR and avalanche mixing. See [Seed Orchestrator](docs/ARCHITECTURE_LAYER5.md) documentation for deep dive.
 
 **Q: Can someone just patch all the calls to run_secure?**
-A: They could modify your binary, but then DYNAMIC_SEED is gone. Next build has a different seed - exploit fails.
+A: They could modify your binary, but then PE_HASH changes. The next build has different entropy from that code patch - exploit fails.
+
+**Q: What if attackers know my source code?**
+A: The runtime seed is unique per user and per hardware. Even identical code produces different opcodes on different CPUs and builds. See [Polymorphism](docs/ARCHITECTURE_LAYER5.md#54-polymorphism-across-users-and-hardware) section.
 
 ## License
 
@@ -349,8 +450,7 @@ MIT License - See LICENSE file for details
 
 ## Author
 
-Created by anhdeface - Advanced anti-reverse engineering systems
-
+Created by anhdeface aka Julian Kmut
 ## Contributing
 
 This is a reference implementation of advanced anti-debugging techniques. It's suitable for:
@@ -372,13 +472,28 @@ Not suitable for:
 
 | I want to... | Go to |
 | --- | --- |
-| Understand how fdebug works | [Architecture Guide](docs/architecture_guide_NEW.md) |
-| Use fdebug in my project | [Complete Guide](docs/FDEBUG_COMPLETE_GUIDE.md) |
-| See all API functions | [API Reference](docs/reference_guide_NEW.md) |
-| Learn best practices | [Implementation Guide](docs/implementation_guide_NEW.md) |
-| See working code | [examples/](examples/) directory |
-| Deploy to production | [Complete Guide - Deployment](docs/FDEBUG_COMPLETE_GUIDE.md#deployment-considerations) |
+| **Learn about latest updates** | [📋 Documentation Updates Summary](docs/DOCUMENTATION_UPDATE_SUMMARY.md) ✨ |
+| **Understand Seed Orchestrator** | [🔐 Seed Orchestrator Layer 5](docs/ARCHITECTURE_LAYER5.md) ✨ |
+| **Customize the build system** | [🔨 Build Guide - Custom Entropy](docs/BUILD_GUIDE.md) ✨ |
+| **Understand how fdebug works** | [🏗️ Full Architecture Guide](docs/architecture_guide_NEW.md) |
+| **Use fdebug in my project** | [📖 Complete Integration Guide](docs/FDEBUG_COMPLETE_GUIDE.md) |
+| **See all API functions** | [📚 API Reference](docs/reference_guide_NEW.md) |
+| **Learn best practices** | [🛠️ Implementation Guide](docs/implementation_guide_NEW.md) |
+| **See working code** | [examples/](examples/) directory |
+| **Deploy to production** | [📖 Integration Guide - Deployment](docs/FDEBUG_COMPLETE_GUIDE.md#deployment-considerations) |
 
 ---
 
-**Start with:** [docs/FDEBUG_COMPLETE_GUIDE.md](docs/FDEBUG_COMPLETE_GUIDE.md)
+## Start Here
+
+**New to fdebug?** Read in this order:
+
+1. [📖 Complete Integration Guide](docs/FDEBUG_COMPLETE_GUIDE.md) - 10 min overview
+2. [🔐 Seed Orchestrator Layer](docs/ARCHITECTURE_LAYER5.md) - Understand the foundation ✨
+3. [🏗️ Architecture Guide](docs/architecture_guide_NEW.md) - Deep technical analysis
+4. [examples/](examples/) - See working code
+5. [🛠️ Implementation Guide](docs/implementation_guide_NEW.md) - Best practices
+
+---
+
+**Latest Update**: Runtime seed reconstruction from three entropy sources (Build-Time, Hardware, PE Integrity). See [🔐 Layer 5](docs/ARCHITECTURE_LAYER5.md) for details.

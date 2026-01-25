@@ -11,9 +11,8 @@
 use std::arch::asm;
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 
-// Import the dynamic seed generated at build time
-mod generated_constants;
-use generated_constants::DYNAMIC_SEED;
+// Import the runtime seed reconstruction functions
+use crate::protector::seed_orchestrator::{get_dynamic_seed, get_dynamic_seed_u8};
 
 /// Compile-time hash function using FNV-1a variant with location-dependent seed
 /// Each string at different location gets different hash due to file/line dependency
@@ -48,24 +47,26 @@ const BUILD_SEED: u32 = const_str_hash(
 );
 
 /// Compile-time string encryption macro
-/// Encrypts string literals at compile time using XOR with a derived key
-/// The key is derived from DYNAMIC_SEED, line number, and memory location to avoid leaving traces
+/// Encrypts string literals at compile time with a placeholder, decrypted at runtime
+#[allow(unused_macros)]
 macro_rules! enc_str {
     ($s:expr) => {{
         // Get the line number where this macro is used
         const LINE_NUM: u32 = line!();
+        const BUILD_HASH: u32 = const_str_hash(concat!(file!(), stringify!($s)));
 
-        // Create a location-dependent key using line number and DYNAMIC_SEED
-        const KEY: u8 = ((BUILD_SEED ^ DYNAMIC_SEED as u32 ^ LINE_NUM) as u8);
+        // Create a location-dependent key using line number and runtime seed
+        let runtime_seed = get_dynamic_seed();
+        let key = ((BUILD_HASH ^ runtime_seed ^ LINE_NUM) as u8);
 
-        // Create encrypted byte array at compile time
+        // Native encrypted bytes (placeholder 0x42 XOR)
         const SRC_BYTES: &'static [u8] = $s.as_bytes();
         const LEN: usize = SRC_BYTES.len();
         const ENCRYPTED: [u8; LEN] = {
             let mut result = [0u8; LEN];
             let mut i = 0;
             while i < LEN {
-                result[i] = SRC_BYTES[i] ^ KEY;
+                result[i] = SRC_BYTES[i] ^ 0x42;
                 i += 1;
             }
             result
@@ -73,10 +74,8 @@ macro_rules! enc_str {
 
         // Create a local copy on the stack for decryption
         let mut stack_copy = [0u8; LEN];
-        let mut i = 0;
-        while i < LEN {
-            stack_copy[i] = ENCRYPTED[i] ^ KEY;
-            i += 1;
+        for i in 0..LEN {
+            stack_copy[i] = ENCRYPTED[i] ^ 0x42 ^ key;
         }
 
         // Convert to string (this is safe because we know it was originally valid UTF-8)
@@ -91,18 +90,20 @@ macro_rules! enc_string {
     ($s:expr) => {{
         // Get the line number where this macro is used
         const LINE_NUM: u32 = line!();
+        const BUILD_HASH: u32 = const_str_hash(concat!(file!(), stringify!($s)));
 
-        // Create a location-dependent key using line number and DYNAMIC_SEED
-        const KEY: u8 = ((BUILD_SEED ^ DYNAMIC_SEED as u32 ^ LINE_NUM) as u8);
+        // Create a location-dependent key using line number and runtime seed
+        let runtime_seed = get_dynamic_seed();
+        let key = ((BUILD_HASH ^ runtime_seed ^ LINE_NUM) as u8);
 
-        // Create encrypted byte array at compile time
+        // Native encrypted bytes (placeholder 0x42 XOR)
         const SRC_BYTES: &'static [u8] = $s.as_bytes();
         const LEN: usize = SRC_BYTES.len();
         const ENCRYPTED: [u8; LEN] = {
             let mut result = [0u8; LEN];
             let mut i = 0;
             while i < LEN {
-                result[i] = SRC_BYTES[i] ^ KEY;
+                result[i] = SRC_BYTES[i] ^ 0x42;
                 i += 1;
             }
             result
@@ -110,10 +111,8 @@ macro_rules! enc_string {
 
         // Create a local copy on the stack for decryption
         let mut stack_copy = [0u8; LEN];
-        let mut i = 0;
-        while i < LEN {
-            stack_copy[i] = ENCRYPTED[i] ^ KEY;
-            i += 1;
+        for i in 0..LEN {
+            stack_copy[i] = ENCRYPTED[i] ^ 0x42 ^ key;
         }
 
         // Convert to String
@@ -121,14 +120,14 @@ macro_rules! enc_string {
     }};
 }
 
-/// Macro to generate polymorphic opcode values at compile time
-/// Uses both the static build seed, dynamic seed, and the global encoded state
+/// Macro to generate polymorphic opcode values at runtime
+/// Uses both the static build seed, runtime seed, and the global encoded state
 macro_rules! auto_op {
     ($base:expr) => {
         {
-            // Use the build seed and dynamic seed at compile time
+            // Use the build seed and runtime seed
             // The runtime behavior will be influenced by the global state
-            (($base as u8).wrapping_add(BUILD_SEED as u8).wrapping_add(DYNAMIC_SEED))
+            (($base as u8).wrapping_add(BUILD_SEED as u8).wrapping_add(get_dynamic_seed_u8()))
         }
     };
 }
@@ -153,43 +152,45 @@ pub struct TinyVm {
     pub key: u64,             // Local key for this VM instance
 }
 
-/// Virtual Machine Operations with auto-generated polymorphic values
-#[repr(u8)]
-pub enum VmOp {
-    OP_LOAD_IMM = auto_op!(0x1A),       // Load immediate value onto stack
-    OP_READ_GS_OFFSET = auto_op!(0x2B), // Read from GS segment (PEB access)
-    OP_READ_MEM_U8 = auto_op!(0x2C),    // Read 1 byte from memory address on stack
-    OP_READ_MEM_U32 = auto_op!(0x2D),   // Read 4 bytes from memory address on stack
-    OP_READ_MEM_U64 = auto_op!(0x2E),   // Read 8 bytes from memory address on stack
-    OP_RDTSC = auto_op!(0x3C),          // Execute RDTSC instruction
-    OP_CPUID = auto_op!(0x3D),          // Execute CPUID instruction
-    OP_IN_PORT = auto_op!(0x3E),        // Read from I/O port
-    OP_OUT_PORT = auto_op!(0x3F),       // Write to I/O port
-    OP_ADD = auto_op!(0x4D),            // Add top two stack values
-    OP_SUB = auto_op!(0x5E),            // Subtract top two stack values
-    OP_XOR = auto_op!(0x6F),            // XOR top two stack values
-    OP_PUSH = auto_op!(0x70),           // Push value to stack
-    OP_POP = auto_op!(0x81),            // Pop value from stack
-    OP_DUP = auto_op!(0x92),            // Duplicate top stack value
-    OP_SWAP = auto_op!(0xA3),           // Swap top two stack values
-    OP_CMP_EQ = auto_op!(0xB4),         // Compare equality
-    OP_CMP_NE = auto_op!(0xC5),         // Compare inequality
-    OP_CMP_GT = auto_op!(0xD6),         // Compare greater than
-    OP_CMP_LT = auto_op!(0xE7),         // Compare less than
-    OP_AND = auto_op!(0xF8),            // Bitwise AND
-    OP_OR = auto_op!(0x09),             // Bitwise OR
-    OP_NOT = auto_op!(0xAA),            // Bitwise NOT
-    OP_SHL = auto_op!(0xBB),            // Shift left
-    OP_SHR = auto_op!(0xCC),            // Shift right
-    OP_JUMP = auto_op!(0xDD),           // Unconditional jump
-    OP_JZ = auto_op!(0xEE),             // Jump if zero
-    OP_JNZ = auto_op!(0xFF),            // Jump if not zero
-    OP_CALL = auto_op!(0x77),           // Call subroutine
-    OP_RET = auto_op!(0x88),            // Return from subroutine
-    OP_EXIT = auto_op!(0x99),           // Exit VM with result
-    OP_GARBAGE = auto_op!(0x9E),        // Garbage opcode for anti-analysis (complex math without effect)
-    OP_POLY_JUNK = auto_op!(0xAB),      // Polymorphic junk opcode for control flow obfuscation
-    OP_EARLY_BIRD = auto_op!(0x66),     // Early bird detection for TLS callbacks
+/// Virtual Machine Operations with runtime polymorphic values
+/// Now defined as a struct with methods because opcodes are runtime-dependent
+pub struct VmOp;
+
+impl VmOp {
+    pub fn op_load_imm() -> u8 { auto_op!(0x1A) }
+    pub fn op_read_gs_offset() -> u8 { auto_op!(0x2B) }
+    pub fn op_read_mem_u8() -> u8 { auto_op!(0x2C) }
+    pub fn op_read_mem_u32() -> u8 { auto_op!(0x2D) }
+    pub fn op_read_mem_u64() -> u8 { auto_op!(0x2E) }
+    pub fn op_rdtsc() -> u8 { auto_op!(0x3C) }
+    pub fn op_cpuid() -> u8 { auto_op!(0x3D) }
+    pub fn op_in_port() -> u8 { auto_op!(0x3E) }
+    pub fn op_out_port() -> u8 { auto_op!(0x3F) }
+    pub fn op_add() -> u8 { auto_op!(0x4D) }
+    pub fn op_sub() -> u8 { auto_op!(0x5E) }
+    pub fn op_xor() -> u8 { auto_op!(0x6F) }
+    pub fn op_push() -> u8 { auto_op!(0x70) }
+    pub fn op_pop() -> u8 { auto_op!(0x81) }
+    pub fn op_dup() -> u8 { auto_op!(0x92) }
+    pub fn op_swap() -> u8 { auto_op!(0xA3) }
+    pub fn op_cmp_eq() -> u8 { auto_op!(0xB4) }
+    pub fn op_cmp_ne() -> u8 { auto_op!(0xC5) }
+    pub fn op_cmp_gt() -> u8 { auto_op!(0xD6) }
+    pub fn op_cmp_lt() -> u8 { auto_op!(0xE7) }
+    pub fn op_and() -> u8 { auto_op!(0xF8) }
+    pub fn op_or() -> u8 { auto_op!(0x09) }
+    pub fn op_not() -> u8 { auto_op!(0xAA) }
+    pub fn op_shl() -> u8 { auto_op!(0xBB) }
+    pub fn op_shr() -> u8 { auto_op!(0xCC) }
+    pub fn op_jump() -> u8 { auto_op!(0xDD) }
+    pub fn op_jz() -> u8 { auto_op!(0xEE) }
+    pub fn op_jnz() -> u8 { auto_op!(0xFF) }
+    pub fn op_call() -> u8 { auto_op!(0x77) }
+    pub fn op_ret() -> u8 { auto_op!(0x88) }
+    pub fn op_exit() -> u8 { auto_op!(0x99) }
+    pub fn op_garbage() -> u8 { auto_op!(0x9E) }
+    pub fn op_poly_junk() -> u8 { auto_op!(0xAB) }
+    pub fn op_early_bird() -> u8 { auto_op!(0x66) }
 }
 
 impl TinyVm {
@@ -322,7 +323,7 @@ pub fn vm_execute(bytecode: &[u8], encryption_key: u8, context_key: u64) -> u64 
     let mut port: u16 = 0;
     let mut shift_amount: u32 = 0;
     let mut global_state = get_global_encoded_state();
-    let mut should_continue_loop = true;
+    let should_continue_loop = true;
 
     loop {
         match state {
@@ -354,100 +355,100 @@ pub fn vm_execute(bytecode: &[u8], encryption_key: u8, context_key: u64) -> u64 
             // EXECUTE_OPCODE state: Dispatch to the appropriate handler based on opcode
             s if opaque_predicate_eq_u32(s, STATE_EXECUTE_OPCODE) => {
                 match decoded_opcode {
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_LOAD_IMM as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_load_imm()) => {
                         state = STATE_HANDLE_OP_LOAD_IMM;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_READ_GS_OFFSET as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_read_gs_offset()) => {
                         state = STATE_HANDLE_OP_READ_GS_OFFSET;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_READ_MEM_U8 as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_read_mem_u8()) => {
                         state = STATE_HANDLE_OP_READ_MEM_U8;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_READ_MEM_U32 as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_read_mem_u32()) => {
                         state = STATE_HANDLE_OP_READ_MEM_U32;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_READ_MEM_U64 as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_read_mem_u64()) => {
                         state = STATE_HANDLE_OP_READ_MEM_U64;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_RDTSC as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_rdtsc()) => {
                         state = STATE_HANDLE_OP_RDTSC;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_CPUID as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_cpuid()) => {
                         state = STATE_HANDLE_OP_CPUID;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_IN_PORT as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_in_port()) => {
                         state = STATE_HANDLE_OP_IN_PORT;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_OUT_PORT as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_out_port()) => {
                         state = STATE_HANDLE_OP_OUT_PORT;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_ADD as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_add()) => {
                         state = STATE_HANDLE_OP_ADD;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_SUB as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_sub()) => {
                         state = STATE_HANDLE_OP_SUB;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_XOR as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_xor()) => {
                         state = STATE_HANDLE_OP_XOR;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_PUSH as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_push()) => {
                         state = STATE_HANDLE_OP_PUSH;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_POP as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_pop()) => {
                         state = STATE_HANDLE_OP_POP;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_DUP as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_dup()) => {
                         state = STATE_HANDLE_OP_DUP;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_SWAP as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_swap()) => {
                         state = STATE_HANDLE_OP_SWAP;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_CMP_EQ as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_cmp_eq()) => {
                         state = STATE_HANDLE_OP_CMP_EQ;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_CMP_NE as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_cmp_ne()) => {
                         state = STATE_HANDLE_OP_CMP_NE;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_CMP_GT as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_cmp_gt()) => {
                         state = STATE_HANDLE_OP_CMP_GT;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_CMP_LT as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_cmp_lt()) => {
                         state = STATE_HANDLE_OP_CMP_LT;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_AND as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_and()) => {
                         state = STATE_HANDLE_OP_AND;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_OR as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_or()) => {
                         state = STATE_HANDLE_OP_OR;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_NOT as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_not()) => {
                         state = STATE_HANDLE_OP_NOT;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_SHL as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_shl()) => {
                         state = STATE_HANDLE_OP_SHL;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_SHR as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_shr()) => {
                         state = STATE_HANDLE_OP_SHR;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_JUMP as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_jump()) => {
                         state = STATE_HANDLE_OP_JUMP;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_JZ as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_jz()) => {
                         state = STATE_HANDLE_OP_JZ;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_JNZ as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_jnz()) => {
                         state = STATE_HANDLE_OP_JNZ;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_EXIT as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_exit()) => {
                         state = STATE_HANDLE_OP_EXIT;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_GARBAGE as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_garbage()) => {
                         state = STATE_HANDLE_OP_GARBAGE;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_POLY_JUNK as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_poly_junk()) => {
                         state = STATE_HANDLE_OP_POLY_JUNK;
                     },
-                    op if opaque_predicate_eq_u8(op, VmOp::OP_EARLY_BIRD as u8) => {
+                    op if opaque_predicate_eq_u8(op, VmOp::op_early_bird()) => {
                         state = STATE_HANDLE_OP_EARLY_BIRD;
                     },
                     _ => {
@@ -1037,8 +1038,8 @@ fn get_enhanced_entropy() -> u32 {
     let success: u8;
     unsafe {
         std::arch::asm!(
-            "xor {result}, {result}",      // Clear result
-            "rdrand {result}",             // Try to get random value from CPU
+            "xor {result:r}, {result:r}",      // Clear result
+            "rdrand {result:r}",             // Try to get random value from CPU
             "setc {success}",              // Set success flag based on carry flag
             result = out(reg) rdrand_entropy,
             success = out(reg_byte) success,
@@ -1071,7 +1072,7 @@ fn opaque_predicate_eq_u32(value: u32, expected: u32) -> bool {
     let result = (value ^ expected).count_ones() == 0;
 
     // Additional obfuscation: add a check that doesn't change the result
-    let extra_check = (value.wrapping_sub(expected) == 0);
+    let extra_check = value.wrapping_sub(expected) == 0;
 
     result && extra_check
 }
@@ -1084,7 +1085,7 @@ fn opaque_predicate_eq_u8(value: u8, expected: u8) -> bool {
     let result = (value ^ expected).count_ones() == 0;
 
     // Additional obfuscation: add a check that doesn't change the result
-    let extra_check = (value.wrapping_sub(expected) == 0);
+    let extra_check = value.wrapping_sub(expected) == 0;
 
     result && extra_check
 }
@@ -1093,39 +1094,39 @@ fn opaque_predicate_eq_u8(value: u8, expected: u8) -> bool {
 /// This would typically be used for error messages or debug information that needs protection
 pub fn get_opcode_name(opcode: u8) -> String {
     match opcode {
-        op if op == VmOp::OP_LOAD_IMM as u8 => enc_string!("LOAD_IMM"),
-        op if op == VmOp::OP_READ_GS_OFFSET as u8 => enc_string!("READ_GS_OFFSET"),
-        op if op == VmOp::OP_READ_MEM_U8 as u8 => enc_string!("READ_MEM_U8"),
-        op if op == VmOp::OP_READ_MEM_U32 as u8 => enc_string!("READ_MEM_U32"),
-        op if op == VmOp::OP_READ_MEM_U64 as u8 => enc_string!("READ_MEM_U64"),
-        op if op == VmOp::OP_RDTSC as u8 => enc_string!("RDTSC"),
-        op if op == VmOp::OP_CPUID as u8 => enc_string!("CPUID"),
-        op if op == VmOp::OP_IN_PORT as u8 => enc_string!("IN_PORT"),
-        op if op == VmOp::OP_OUT_PORT as u8 => enc_string!("OUT_PORT"),
-        op if op == VmOp::OP_ADD as u8 => enc_string!("ADD"),
-        op if op == VmOp::OP_SUB as u8 => enc_string!("SUB"),
-        op if op == VmOp::OP_XOR as u8 => enc_string!("XOR"),
-        op if op == VmOp::OP_PUSH as u8 => enc_string!("PUSH"),
-        op if op == VmOp::OP_POP as u8 => enc_string!("POP"),
-        op if op == VmOp::OP_DUP as u8 => enc_string!("DUP"),
-        op if op == VmOp::OP_SWAP as u8 => enc_string!("SWAP"),
-        op if op == VmOp::OP_CMP_EQ as u8 => enc_string!("CMP_EQ"),
-        op if op == VmOp::OP_CMP_NE as u8 => enc_string!("CMP_NE"),
-        op if op == VmOp::OP_CMP_GT as u8 => enc_string!("CMP_GT"),
-        op if op == VmOp::OP_CMP_LT as u8 => enc_string!("CMP_LT"),
-        op if op == VmOp::OP_AND as u8 => enc_string!("AND"),
-        op if op == VmOp::OP_OR as u8 => enc_string!("OR"),
-        op if op == VmOp::OP_NOT as u8 => enc_string!("NOT"),
-        op if op == VmOp::OP_SHL as u8 => enc_string!("SHL"),
-        op if op == VmOp::OP_SHR as u8 => enc_string!("SHR"),
-        op if op == VmOp::OP_JUMP as u8 => enc_string!("JUMP"),
-        op if op == VmOp::OP_JZ as u8 => enc_string!("JZ"),
-        op if op == VmOp::OP_JNZ as u8 => enc_string!("JNZ"),
-        op if op == VmOp::OP_CALL as u8 => enc_string!("CALL"),
-        op if op == VmOp::OP_RET as u8 => enc_string!("RET"),
-        op if op == VmOp::OP_EXIT as u8 => enc_string!("EXIT"),
-        op if op == VmOp::OP_GARBAGE as u8 => enc_string!("GARBAGE"),
-        op if op == VmOp::OP_POLY_JUNK as u8 => enc_string!("POLY_JUNK"),
+        op if op == VmOp::op_load_imm() => enc_string!("LOAD_IMM"),
+        op if op == VmOp::op_read_gs_offset() => enc_string!("READ_GS_OFFSET"),
+        op if op == VmOp::op_read_mem_u8() => enc_string!("READ_MEM_U8"),
+        op if op == VmOp::op_read_mem_u32() => enc_string!("READ_MEM_U32"),
+        op if op == VmOp::op_read_mem_u64() => enc_string!("READ_MEM_U64"),
+        op if op == VmOp::op_rdtsc() => enc_string!("RDTSC"),
+        op if op == VmOp::op_cpuid() => enc_string!("CPUID"),
+        op if op == VmOp::op_in_port() => enc_string!("IN_PORT"),
+        op if op == VmOp::op_out_port() => enc_string!("OUT_PORT"),
+        op if op == VmOp::op_add() => enc_string!("ADD"),
+        op if op == VmOp::op_sub() => enc_string!("SUB"),
+        op if op == VmOp::op_xor() => enc_string!("XOR"),
+        op if op == VmOp::op_push() => enc_string!("PUSH"),
+        op if op == VmOp::op_pop() => enc_string!("POP"),
+        op if op == VmOp::op_dup() => enc_string!("DUP"),
+        op if op == VmOp::op_swap() => enc_string!("SWAP"),
+        op if op == VmOp::op_cmp_eq() => enc_string!("CMP_EQ"),
+        op if op == VmOp::op_cmp_ne() => enc_string!("CMP_NE"),
+        op if op == VmOp::op_cmp_gt() => enc_string!("CMP_GT"),
+        op if op == VmOp::op_cmp_lt() => enc_string!("CMP_LT"),
+        op if op == VmOp::op_and() => enc_string!("AND"),
+        op if op == VmOp::op_or() => enc_string!("OR"),
+        op if op == VmOp::op_not() => enc_string!("NOT"),
+        op if op == VmOp::op_shl() => enc_string!("SHL"),
+        op if op == VmOp::op_shr() => enc_string!("SHR"),
+        op if op == VmOp::op_jump() => enc_string!("JUMP"),
+        op if op == VmOp::op_jz() => enc_string!("JZ"),
+        op if op == VmOp::op_jnz() => enc_string!("JNZ"),
+        op if op == VmOp::op_call() => enc_string!("CALL"),
+        op if op == VmOp::op_ret() => enc_string!("RET"),
+        op if op == VmOp::op_exit() => enc_string!("EXIT"),
+        op if op == VmOp::op_garbage() => enc_string!("GARBAGE"),
+        op if op == VmOp::op_poly_junk() => enc_string!("POLY_JUNK"),
         _ => enc_string!("UNKNOWN_OPCODE"),
     }
 }
@@ -1150,7 +1151,7 @@ mod tests {
         let test_str = enc_string!("Hello, World!");
         assert_eq!(test_str, "Hello, World!");
 
-        let opcode_name = get_opcode_name(VmOp::OP_ADD as u8);
+        let opcode_name = get_opcode_name(VmOp::op_add());
         assert_eq!(opcode_name, "ADD");
 
         let error_msg = get_error_message("invalid_opcode");

@@ -550,7 +550,7 @@ static mut PROTECTOR: Option<Protector> = None;
 fn get_protector() -> &'static Protector {
     unsafe {
         INIT.call_once(|| {
-            PROTECTOR = Some(Protector::new(DYNAMIC_SEED));
+            PROTECTOR = Some(Protector::new(get_get_dynamic_seed()()));
         });
         PROTECTOR.as_ref().unwrap()
     }
@@ -704,8 +704,8 @@ mod score_tests {
 ### Consideration 1: Seed Management
 
 ```rust
-// ✅ GOOD - Use DYNAMIC_SEED (changes every build)
-let protector = Protector::new(DYNAMIC_SEED);
+// ✅ GOOD - Use get_get_dynamic_seed()() (changes every build)
+let protector = Protector::new(get_get_dynamic_seed()());
 
 // ❌ POOR - Hardcoded seed (same across all builds)
 let protector = Protector::new(0x12345678);
@@ -775,7 +775,7 @@ fn check_environment() {
     // Enable diagnostic mode to see what's triggering
     DIAGNOSTIC_MODE.store(true, Ordering::Relaxed);
     
-    let protector = Protector::new(DYNAMIC_SEED);
+    let protector = Protector::new(get_get_dynamic_seed()());
     
     // Check which checkpoints triggered
     use fdebug::protector::global_state::TRIGGERED_CHECKPOINTS;

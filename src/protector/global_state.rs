@@ -1,14 +1,9 @@
-#![allow(dead_code)]
-
 //! Global state management for the anti-debug system with SipHash-based encryption
 // github.com/anhdeface
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-// Import the dynamic seed generated at build time
-pub mod generated_constants;
-pub use generated_constants::DYNAMIC_SEED;
-
+use std::sync::OnceLock;
+#[allow(non_snake_case)]
 /// Diagnostic mode for debugging false positives
 pub static DIAGNOSTIC_MODE: AtomicBool = AtomicBool::new(true);
 /// Array to track triggered checkpoints and their total suspicion
@@ -42,7 +37,7 @@ impl DetectionSeverity {
 }
 
 // Global atomic threat score and decay tracking
-// Const function to generate pseudo-random masks from DYNAMIC_SEED
+// Const function to generate pseudo-random masks from runtime seed
 const fn mix_seed(seed: u32, i: u32) -> u32 {
     let mut x = seed.wrapping_add(i).wrapping_mul(0x9E3779B9);
     x = x ^ (x >> 15);
@@ -53,27 +48,35 @@ const fn mix_seed(seed: u32, i: u32) -> u32 {
     x
 }
 
-// Global atomic threat score shards and decay tracking
-// SHARD_MASKS derived from DYNAMIC_SEED for obfuscation
-pub static SHARD_MASKS: [u32; 16] = [
-    mix_seed(DYNAMIC_SEED, 0), mix_seed(DYNAMIC_SEED, 1), mix_seed(DYNAMIC_SEED, 2), mix_seed(DYNAMIC_SEED, 3),
-    mix_seed(DYNAMIC_SEED, 4), mix_seed(DYNAMIC_SEED, 5), mix_seed(DYNAMIC_SEED, 6), mix_seed(DYNAMIC_SEED, 7),
-    mix_seed(DYNAMIC_SEED, 8), mix_seed(DYNAMIC_SEED, 9), mix_seed(DYNAMIC_SEED, 10), mix_seed(DYNAMIC_SEED, 11),
-    mix_seed(DYNAMIC_SEED, 12), mix_seed(DYNAMIC_SEED, 13), mix_seed(DYNAMIC_SEED, 14), mix_seed(DYNAMIC_SEED, 15),
-];
+// SHARD_MASKS - Now runtime-initialized from reconstructed seed
+// Cache for the shard masks
+static SHARD_MASKS_CACHE: OnceLock<[u32; 16]> = OnceLock::new();
+
+/// Get shard mask for a specific index
+/// Lazily initializes the masks on first access using the reconstructed seed
+#[inline(always)]
+pub fn get_shard_mask(index: usize) -> u32 {
+    let masks = SHARD_MASKS_CACHE.get_or_init(|| {
+        // Get runtime-reconstructed seed
+        let seed = crate::protector::seed_orchestrator::get_dynamic_seed();
+        [
+            mix_seed(seed, 0), mix_seed(seed, 1), mix_seed(seed, 2), mix_seed(seed, 3),
+            mix_seed(seed, 4), mix_seed(seed, 5), mix_seed(seed, 6), mix_seed(seed, 7),
+            mix_seed(seed, 8), mix_seed(seed, 9), mix_seed(seed, 10), mix_seed(seed, 11),
+            mix_seed(seed, 12), mix_seed(seed, 13), mix_seed(seed, 14), mix_seed(seed, 15),
+        ]
+    });
+    masks[index]
+}
 
 // Distributed suspicion state
-// Initialized to SHARD_MASKS values to represent 0 score (Mask ^ Mask = 0)
+// Initialized at runtime to SHARD_MASKS values to represent 0 score (Mask ^ Mask = 0)
 // If memory is zeroed (frozen), Val ^ Mask = Mask -> Huge Score -> Alarm
 pub static SUSPICION_SHARDS: [AtomicU32; 16] = [
-    AtomicU32::new(mix_seed(DYNAMIC_SEED, 0)), AtomicU32::new(mix_seed(DYNAMIC_SEED, 1)),
-    AtomicU32::new(mix_seed(DYNAMIC_SEED, 2)), AtomicU32::new(mix_seed(DYNAMIC_SEED, 3)),
-    AtomicU32::new(mix_seed(DYNAMIC_SEED, 4)), AtomicU32::new(mix_seed(DYNAMIC_SEED, 5)),
-    AtomicU32::new(mix_seed(DYNAMIC_SEED, 6)), AtomicU32::new(mix_seed(DYNAMIC_SEED, 7)),
-    AtomicU32::new(mix_seed(DYNAMIC_SEED, 8)), AtomicU32::new(mix_seed(DYNAMIC_SEED, 9)),
-    AtomicU32::new(mix_seed(DYNAMIC_SEED, 10)), AtomicU32::new(mix_seed(DYNAMIC_SEED, 11)),
-    AtomicU32::new(mix_seed(DYNAMIC_SEED, 12)), AtomicU32::new(mix_seed(DYNAMIC_SEED, 13)),
-    AtomicU32::new(mix_seed(DYNAMIC_SEED, 14)), AtomicU32::new(mix_seed(DYNAMIC_SEED, 15)),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
 ];
 
 // Reconstruct threat score moved to lower section for better locality with distributed logic helpers.
@@ -89,13 +92,13 @@ pub static GLOBAL_VIRTUAL_MACHINE_KEY: AtomicU8 = AtomicU8::new(0x42);
 /// Mandatory for all future security token calculations
 pub static POISON_SEED: AtomicU64 = AtomicU64::new(0);
 
-// Dynamic SipHash constants that are initialized with DYNAMIC_SEED
+// Dynamic SipHash constants that are initialized with dynamic seed
 static GLOBAL_SIPHASH_V0: AtomicU64 = AtomicU64::new(0);
 static GLOBAL_SIPHASH_V1: AtomicU64 = AtomicU64::new(0);
 static GLOBAL_SIPHASH_V2: AtomicU64 = AtomicU64::new(0);
 static GLOBAL_SIPHASH_V3: AtomicU64 = AtomicU64::new(0);
 
-// SipHash constants and state - now dynamic based on DYNAMIC_SEED
+// SipHash constants and state - now dynamic based on runtime seed
 const SIPHASH_C_ROUNDS: usize = 2;
 const SIPHASH_D_ROUNDS: usize = 4;
 
@@ -133,17 +136,18 @@ pub fn recalculate_global_integrity() {
     let combined = (reconstruct_threat_score() as u64)
         .wrapping_add(GLOBAL_LAST_DECAY_TIME.load(Ordering::SeqCst));
 
-    // Use dynamic SipHash-like algorithm with DYNAMIC_SEED for stronger integrity checking
+    // Use dynamic SipHash-like algorithm with dynamic seed for stronger integrity checking
     let base_v0 = 0x736f6d6570736575u64;
     let base_v1 = 0x646f72616e646f6du64;
     let base_v2 = 0x6c7967656e657261u64;
     let base_v3 = 0x7465646279746573u64;
 
-    // Mix the base values with DYNAMIC_SEED to create dynamic constants
-    let dyn_v0 = base_v0 ^ (DYNAMIC_SEED as u64);
-    let dyn_v1 = base_v1 ^ ((DYNAMIC_SEED as u64) << 8);
-    let dyn_v2 = base_v2 ^ ((DYNAMIC_SEED as u64) << 16);
-    let dyn_v3 = base_v3 ^ ((DYNAMIC_SEED as u64) << 24);
+    // Mix the base values with dynamic seed to create dynamic constants
+    let seed = crate::protector::seed_orchestrator::get_dynamic_seed();
+    let dyn_v0 = base_v0 ^ (seed as u64);
+    let dyn_v1 = base_v1 ^ ((seed as u64) << 8);
+    let dyn_v2 = base_v2 ^ ((seed as u64) << 16);
+    let dyn_v3 = base_v3 ^ ((seed as u64) << 24);
 
     let mut v0 = dyn_v0;
     let mut v1 = dyn_v1;
@@ -173,10 +177,11 @@ pub fn validate_global_integrity() -> bool {
     let base_v2 = 0x6c7967656e657261u64;
     let base_v3 = 0x7465646279746573u64;
 
-    let dyn_v0 = base_v0 ^ (DYNAMIC_SEED as u64);
-    let dyn_v1 = base_v1 ^ ((DYNAMIC_SEED as u64) << 8);
-    let dyn_v2 = base_v2 ^ ((DYNAMIC_SEED as u64) << 16);
-    let dyn_v3 = base_v3 ^ ((DYNAMIC_SEED as u64) << 24);
+    let seed = crate::protector::seed_orchestrator::get_dynamic_seed();
+    let dyn_v0 = base_v0 ^ (seed as u64);
+    let dyn_v1 = base_v1 ^ ((seed as u64) << 8);
+    let dyn_v2 = base_v2 ^ ((seed as u64) << 16);
+    let dyn_v3 = base_v3 ^ ((seed as u64) << 24);
 
     let mut v0 = dyn_v0;
     let mut v1 = dyn_v1;
@@ -351,7 +356,7 @@ fn get_random_indices_3() -> (usize, usize, usize) {
     
     // Mix entropy with stack address to prevent simple rdtsc manipulation
     let stack_var = 0;
-    entropy ^= (&stack_var as *const i32 as u64);
+    entropy ^= &stack_var as *const i32 as u64;
     
     // Simple LCG-like mixer
     let mut rng = entropy;
@@ -422,7 +427,7 @@ pub fn add_suspicion_at(severity: DetectionSeverity, checkpoint_id: u8) {
 
 /// Helper to add score to specific shard safely
 fn add_to_shard(idx: usize, amount: u32) {
-    let mask = SHARD_MASKS[idx];
+    let mask = get_shard_mask(idx);
     let mut current_encoded = SUSPICION_SHARDS[idx].load(Ordering::SeqCst);
     
     loop {
@@ -487,7 +492,7 @@ fn apply_decay() {
         // Wrap around index
         let idx = (start_idx + i) % 16;
         
-        let mask = SHARD_MASKS[idx];
+        let mask = get_shard_mask(idx);
         let mut current_encoded = SUSPICION_SHARDS[idx].load(Ordering::SeqCst);
         
         loop {
@@ -518,7 +523,7 @@ pub fn reconstruct_threat_score() -> u32 {
     let mut total_score: u32 = 0;
     for i in 0..16 {
         let encoded = SUSPICION_SHARDS[i].load(Ordering::SeqCst);
-        let mask = SHARD_MASKS[i];
+        let mask = get_shard_mask(i);
         
         // Reconstruction with XOR and Index-based Rotation
         let decoded = encoded ^ mask;
@@ -576,7 +581,7 @@ pub fn initialize_veh_protection() {
     // Initialize the global state with default values
     // Initialize shards to their masked zero values
     for i in 0..16 {
-        SUSPICION_SHARDS[i].store(SHARD_MASKS[i], Ordering::SeqCst);
+        SUSPICION_SHARDS[i].store(get_shard_mask(i), Ordering::SeqCst);
     }
     GLOBAL_LAST_DECAY_TIME.store(get_current_timestamp(), Ordering::SeqCst);
     
@@ -584,29 +589,30 @@ pub fn initialize_veh_protection() {
     GLOBAL_ENCRYPTION_KEY.store(0x42, Ordering::SeqCst);
     GLOBAL_VIRTUAL_MACHINE_KEY.store(0x42, Ordering::SeqCst);
     
-    // Initialize POISON_SEED with a transformed DYNAMIC_SEED
-    POISON_SEED.store((DYNAMIC_SEED as u64) ^ 0xCAFEBABE1337BEEF, Ordering::SeqCst);
+    // Initialize POISON_SEED with a transformed reconstructed seed
+    let seed = crate::protector::seed_orchestrator::get_dynamic_seed();
+    POISON_SEED.store((seed as u64) ^ 0xCAFEBABE1337BEEF, Ordering::SeqCst);
 
-    // Initialize dynamic SipHash constants using DYNAMIC_SEED
+    // Initialize dynamic SipHash constants using dynamic seed
     initialize_dynamic_siphash();
 
     // Recalculate integrity hash after initialization
     recalculate_global_integrity();
 }
 
-/// Initialize SipHash constants with dynamic values using DYNAMIC_SEED to make them non-standard
+/// Initialize SipHash constants with dynamic values using runtime seed to make them non-standard
 fn initialize_dynamic_siphash() {
-    // Use DYNAMIC_SEED to create dynamic initial values for SipHash
+    // Use reconstructed seed to create dynamic initial values for SipHash
     // This makes the magic numbers polymorphic and harder to scan for
-    let seed = DYNAMIC_SEED as u64;
+    let seed = crate::protector::seed_orchestrator::get_dynamic_seed() as u64;
 
-    // Create dynamic initial values by XORing base constants with DYNAMIC_SEED
+    // Create dynamic initial values by XORing base constants with runtime seed
     let base_v0 = 0x736f6d6570736575u64;
     let base_v1 = 0x646f72616e646f6du64;
     let base_v2 = 0x6c7967656e657261u64;
     let base_v3 = 0x7465646279746573u64;
 
-    // Mix the base values with DYNAMIC_SEED to create dynamic constants
+    // Mix the base values with seed to create dynamic constants
     let dyn_v0 = base_v0 ^ (seed);
     let dyn_v1 = base_v1 ^ (seed << 8);
     let dyn_v2 = base_v2 ^ (seed << 16);
@@ -643,9 +649,10 @@ pub fn log_detection_event(event_type: u8, severity: u8, timestamp: u64) {
                         ((severity as u64) << 48) |
                         (timestamp & 0x00FFFFFFFFFFFF);
 
-    // Apply multiple layers of obfuscation using DYNAMIC_SEED
-    let obfuscated_entry = bitmask_entry ^ (DYNAMIC_SEED as u64);
-    let rotated_entry = obfuscated_entry.rotate_left((DYNAMIC_SEED & 0x1F) as u32); // Rotate by lower 5 bits of seed
+    // Apply multiple layers of obfuscation using reconstructed seed
+    let seed = crate::protector::seed_orchestrator::get_dynamic_seed();
+    let obfuscated_entry = bitmask_entry ^ (seed as u64);
+    let rotated_entry = obfuscated_entry.rotate_left((seed & 0x1F) as u32); // Rotate by lower 5 bits of seed
     let final_entry = rotated_entry ^ 0xCAFEBABEDEADBEEF; // Additional XOR with magic constant
 
     STEALTH_LOG_BUFFER[idx].store(final_entry, Ordering::SeqCst);

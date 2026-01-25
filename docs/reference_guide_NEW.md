@@ -22,11 +22,11 @@ Complete guide to using the fdebug anti-debug protection system in Rust applicat
 ### Basic Setup
 
 ```rust
-use fdebug::protector::{Protector, DYNAMIC_SEED};
+use fdebug::protector::{Protector, get_dynamic_seed};
 
 fn main() {
-    // Initialize the protector with a static seed or DYNAMIC_SEED
-    let protector = Protector::new(DYNAMIC_SEED);
+    // Initialize the protector with a static seed or get_dynamic_seed()
+    let protector = Protector::new(get_dynamic_seed());
     
     println!("[+] Anti-debug protection initialized");
     
@@ -172,7 +172,7 @@ pub fn get_current_vm_key() -> u8;
 pub fn initialize_veh_protection();
 
 /// Build-time generated random seed
-pub const DYNAMIC_SEED: u32;
+pub const get_dynamic_seed(): u32;
 ```
 
 ---
@@ -769,7 +769,7 @@ A: They can patch them, but the `watchdog_check_decoys()` function monitors the 
 
 **Q: Is the protection per-binary or per-process?**
 
-A: **Per-binary.** The `DYNAMIC_SEED` is generated at compile-time and is unique for each build. This means:
+A: **Per-binary.** The `get_dynamic_seed()` is generated at compile-time and is unique for each build. This means:
 - Each binary has different opcode values
 - Each binary has different mask values for shards
 - Attackers cannot reuse exploits across builds
@@ -790,7 +790,7 @@ A: Yes! All global state uses `AtomicU32`/`AtomicU64` with proper `SeqCst` order
 A: Use feature flags:
 ```rust
 #[cfg(not(debug_assertions))]
-let protector = Protector::new(DYNAMIC_SEED);
+let protector = Protector::new(get_dynamic_seed());
 
 #[cfg(debug_assertions)]
 let protector = DummyProtector::new(); // No-op implementation
@@ -817,9 +817,9 @@ Use `run_coupled` for business logic that needs transparent protection. Use `run
 
 A: Partially. The protection is strongest against user-mode debuggers (WinDbg, x64dbg, IDA Debugger). Kernel-mode debuggers (KernelDBG) have lower-level access and may bypass some checks. However, the distributed sharding and integrity hashes still provide significant protection.
 
-**Q: Should I use the same DYNAMIC_SEED for all binaries?**
+**Q: Should I use the same get_dynamic_seed() for all binaries?**
 
-A: No! Let each build generate its own `DYNAMIC_SEED`. This prevents attackers from creating a universal exploit. If you need to fix bugs, rebuild and get a new seed.
+A: No! Let each build generate its own `get_dynamic_seed()`. This prevents attackers from creating a universal exploit. If you need to fix bugs, rebuild and get a new seed.
 
 ---
 
@@ -840,11 +840,11 @@ A: No! Let each build generate its own `DYNAMIC_SEED`. This prevents attackers f
 
 ## Building Binaries with FDebug
 
-Every build generates a new `DYNAMIC_SEED`:
+Every build generates a new `get_dynamic_seed()`:
 
 ```rust
 // This will be DIFFERENT for each build
-pub const DYNAMIC_SEED: u32 = 0x12345678; // Changes every compilation
+pub const get_dynamic_seed(): u32 = 0x12345678; // Changes every compilation
 ```
 
 To see the current seed:

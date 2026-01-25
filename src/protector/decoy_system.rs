@@ -202,8 +202,8 @@ fn get_cpu_entropy() -> u32 {
 
     unsafe {
         asm!(
-            "xor {result}, {result}",      // Clear result
-            "rdrand {result}",             // Try to get random value from CPU
+            "xor {result:r}, {result:r}",      // Clear result
+            "rdrand {result:r}",             // Try to get random value from CPU
             "setc {success}",              // Set success flag based on carry flag
             result = out(reg) result,
             success = out(reg_byte) success,
