@@ -274,4 +274,34 @@ The existing documentation maintains these stylistic elements that should be pre
 6. **Emoji usage** (minimal): ✅ for good practices, ❌ for bad practices
 7. **Narrative flow**: Builds from simple to complex concepts
 
-All updates should maintain these characteristics.
+
+---
+
+## Mandatory Anti-Dump Integration (Zero-Bypass)
+
+New hardening phase ensuring Anti-Dump protection is strictly enforced and unbypassable.
+
+### What Changed:
+
+1.  **Mandatory Macro Enforcement**
+    - The `setup_anti_debug!` macro now explicitly calls `init_anti_dump()` before creating the Protector.
+    - `Protector::new()` is still available but usage via macro is now the standard to ensure initialization.
+
+2.  **Stealth Verification Loop (`run_secure`)**
+    - **Logic**: Every call to `run_secure()` now checks if the PE Header (MZ signature) is erased.
+    - **Failure State**: If headers are found (meaning Anti-Dump failed or was skipped), the system triggers `poison_encryption_on_dump_attempt()`.
+    - **Behavior**: Silent corruption of `GLOBAL_ENCRYPTION_KEY`. No crashes, just garbage data.
+
+3.  **Entropy Erasure**
+    - **Before**: Headers erased with zeros.
+    - **After**: Headers erased with **random entropy** derived from `KUSER_SHARED_DATA`.
+    - **Benefit**: Defeats reconstruction tools that look for null-byte blocks to identify header locations.
+
+4.  **Pure FFI (Zero Dependency)**
+    - Replaced `windows` crate usage in `decoy_system.rs` with `extern "system"` blocks.
+    - Reduces binary size and removes easy-to-fingerprint imports.
+
+5.  **Global Kill-Switch**
+    - If a dump attempt is detected, `DIAGNOSTIC_MODE` is atomic-swapped to `false`.
+    - Attacker is instantly blinded (no logs) during the attack analysis.
+

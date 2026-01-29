@@ -36,6 +36,57 @@ impl DetectionSeverity {
     }
 }
 
+/// Structure containing detailed detection statistics
+#[derive(Debug, Clone, Copy)]
+pub struct DetectionDetails {
+    pub is_debugged: bool,
+    pub score: u32,
+    pub peb_check: bool,
+    pub rdtsc_check: bool,
+    pub heap_check: bool,
+    pub hypervisor_check: bool,
+    pub integrity_check: bool,
+}
+
+// ============================================================================
+// COMMON WINDOWS FFI STRUCTURES
+// ============================================================================
+
+#[repr(C)]
+pub struct EXCEPTION_RECORD {
+    pub ExceptionCode: u32,
+    pub ExceptionFlags: u32,
+    pub ExceptionRecord: *mut EXCEPTION_RECORD,
+    pub ExceptionAddress: *mut std::ffi::c_void,
+    pub NumberParameters: u32,
+    pub ExceptionInformation: [usize; 15],
+}
+
+#[repr(C)]
+pub struct EXCEPTION_POINTERS {
+    pub ExceptionRecord: *mut EXCEPTION_RECORD,
+    pub ContextRecord: *mut CONTEXT,
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    pub fn AddVectoredExceptionHandler(First: u32, Handler: Option<unsafe extern "system" fn(*mut EXCEPTION_POINTERS) -> i32>) -> *mut std::ffi::c_void;
+}
+
+#[repr(C, align(16))]
+pub struct CONTEXT {
+    pub P1Home: u64, pub P2Home: u64, pub P3Home: u64, pub P4Home: u64, pub P5Home: u64, pub P6Home: u64,
+    pub ContextFlags: u32,
+    pub MxCsr: u32,
+    pub SegCs: u16, pub SegDs: u16, pub SegEs: u16, pub SegFs: u16, pub SegGs: u16, pub SegSs: u16,
+    pub EFlags: u32,
+    pub Dr0: u64, pub Dr1: u64, pub Dr2: u64, pub Dr3: u64, pub Dr6: u64, pub Dr7: u64,
+    pub Rax: u64, pub Rcx: u64, pub Rdx: u64, pub Rbx: u64, pub Rsp: u64, pub Rbp: u64, pub Rsi: u64, pub Rdi: u64,
+    pub R8: u64, pub R9: u64, pub R10: u64, pub R11: u64, pub R12: u64, pub R13: u64, pub R14: u64, pub R15: u64,
+    pub Rip: u64,
+    // ... other fields if needed, but these are enough for our use case
+}
+
 // Global atomic threat score and decay tracking
 // Const function to generate pseudo-random masks from runtime seed
 const fn mix_seed(seed: u32, i: u32) -> u32 {
@@ -418,7 +469,7 @@ pub fn add_suspicion(severity: DetectionSeverity) {
     recalculate_global_integrity();
 }
 
-/// Add suspicion with checkpoint tracking for diagnostics
+/// Add suspicion at a specific checkpoint and dispersed shards
 pub fn add_suspicion_at(severity: DetectionSeverity, checkpoint_id: u8) {
     let amount = severity.score();
     log_checkpoint_trigger(checkpoint_id, amount);
@@ -549,6 +600,20 @@ pub fn get_suspicion_score() -> u32 {
     score
 }
 
+/// Get detailed detection statistics for diagnostic purposes
+pub fn get_detection_details() -> DetectionDetails {
+    let score = get_suspicion_score();
+    DetectionDetails {
+        is_debugged: score > 50,
+        score,
+        peb_check: score > 20,
+        rdtsc_check: score > 30,
+        heap_check: score > 40,
+        hypervisor_check: score > 60,
+        integrity_check: score > 80,
+    }
+}
+
 /// Get a combined security score that incorporates the threat level and poison seed
 /// This is used to derive dynamic execution tokens.
 pub fn get_combined_score() -> u64 {
@@ -668,6 +733,22 @@ pub fn update_vm_key_with_result(vm_result: u64) {
                              ((vm_result >> 24) & 0xFF);
     GLOBAL_VIRTUAL_MACHINE_KEY.store(current_key ^ (transformed_result as u8), Ordering::SeqCst);
 }
+
+/// Poison GLOBAL_ENCRYPTION_KEY on dump attempt detection (for anti_dump_v2)
+pub fn poison_encryption_on_dump_attempt() {
+    let entropy = crate::protector::seed_orchestrator::get_dynamic_seed();
+    GLOBAL_ENCRYPTION_KEY.fetch_xor(entropy as u8, Ordering::SeqCst);
+    
+    // Cascade poison to POISON_SEED
+    POISON_SEED.fetch_xor(entropy as u64, Ordering::SeqCst);
+    
+    // KILL SWITCH: Disable all diagnostics to blind the attacker
+    DIAGNOSTIC_MODE.store(false, Ordering::SeqCst);
+
+    // Add critical suspicion
+    add_suspicion(DetectionSeverity::Critical);
+}
+
 
 
 

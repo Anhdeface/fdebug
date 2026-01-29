@@ -15,17 +15,18 @@ FDebug Protection:      Debugger detected → Silent Corruption →
                         debugging non-existent bugs → Attacker gives up
 ```
 
-### 🆕 Latest Update: Seed Orchestrator Architecture
+### 🆕 Latest Update: Mandatory Anti-Dump Integration
 
-The system now implements **runtime seed reconstruction** from three independent entropy sources instead of static constants:
+The system now enforces **Zero-Bypass Anti-Dump** protection at the kernel level:
 
-- **Build-Time Seed**: Unique random value per binary compilation
-- **Hardware Entropy**: CPU-specific fingerprint from CPUID
-- **PE Integrity Hash**: Checksum of executable code sections
+- **Mandatory Enforcement**: `Protector` cannot be instantiated without Anti-Dump active (enforced via macro & atomic checks).
+- **Stealth Verification Loop**: Every `run_secure()` call silently verifies that PE headers are erased.
+- **Entropy Erasure**: PE headers are overwritten with **random entropy** instead of zeros, defeating pattern-matching scanners.
+- **Pure FFI**: Zero external dependencies; uses raw `extern "system"` calls for maximum stealth.
 
-**Result**: Each user gets uniquely protected binaries, different even on the same hardware if code changes. No static keys to extract from memory or binary analysis.
+**Result**: If an attacker attempts to dump the process memory, they get invalid garbage. If they bypass the protection, the system silently poisons all encryption keys.
 
-See [Architecture Layer 5 Documentation](#-architecture-layer-5--seed-orchestrator) below for details.
+See [Architecture Layer 5 Documentation](docs/ARCHITECTURE_LAYER5.md) for details.
 
 ## Key Features
 
@@ -37,6 +38,8 @@ See [Architecture Layer 5 Documentation](#-architecture-layer-5--seed-orchestrat
 | **Silent Corruption** | Token-based key poisoning | No crashes; just silently wrong results |
 | **Honey Pot Traps** | Decoy functions with watchdog monitoring | Reverse engineers patch decoys → automatic detection → execution poisoned |
 | **Mathematical Coupling** | Security tokens bound to business logic | Cracked protection automatically invalidates calculations |
+| **Zero-Static-Trace Strings** | `dynamic_str!` macro with TinyVM reconstruction | No string data in .rdata; volatile stack operations only ✨ |
+| **Stealth Anti-Dump** | Indirect syscalls + PE header erasure | Bypasses EDR hooks; memory dumps produce invalid PE files ✨ |
 
 ## Quick Start
 

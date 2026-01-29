@@ -2,9 +2,30 @@
 
 //! Decoy System - Honey Pot Pattern for Anti-Reverse Engineering
 //! Contains decoy functions that look important but are designed to catch hackers who try to patch them
+//!
+//! # Zero-Dependency Policy
+//! This module uses PURE FFI declarations only. No windows-rs or winapi crates.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::arch::asm;
+
+// ============================================================================
+// PURE FFI DECLARATIONS (Zero-Dependency Policy)
+// ============================================================================
+
+#[link(name = "kernel32")]
+extern "system" {
+    /// Win32 API: Determines whether the calling process is being debugged by a user-mode debugger.
+    /// Returns non-zero if the process is being debugged, zero otherwise.
+    /// 
+    /// # Safety
+    /// This is a safe Win32 API with no side effects. It simply queries the PEB's BeingDebugged flag.
+    fn IsDebuggerPresent() -> i32;
+}
+
+// ============================================================================
+// GLOBAL STATE
+// ============================================================================
 
 // Global atomic flag to track if decoy functions have been tampered with
 static DECOY_TAMPERED: AtomicBool = AtomicBool::new(false);
@@ -25,8 +46,10 @@ fn check_kernel_debugger() -> bool {
 
     // Basic check that's easy to bypass but looks important
     let result = std::hint::black_box(unsafe {
-        use windows::Win32::System::Diagnostics::Debug::IsDebuggerPresent;
-        IsDebuggerPresent().as_bool()
+        // SAFETY: IsDebuggerPresent is a pure query function with no side effects.
+        // It reads the PEB's BeingDebugged flag and returns 0 or non-zero.
+        // This function cannot cause undefined behavior or memory corruption.
+        IsDebuggerPresent() != 0
     });
 
     // Perform tamper detection after the check
@@ -43,8 +66,10 @@ fn is_process_being_debugged() -> bool {
 
     // Simple check that's easy to fool but looks important
     let result = std::hint::black_box(unsafe {
-        use windows::Win32::System::Diagnostics::Debug::IsDebuggerPresent;
-        IsDebuggerPresent().as_bool()
+        // SAFETY: IsDebuggerPresent is a pure query function with no side effects.
+        // It reads the PEB's BeingDebugged flag and returns 0 or non-zero.
+        // This function cannot cause undefined behavior or memory corruption.
+        IsDebuggerPresent() != 0
     });
 
     // Perform tamper detection after the check
@@ -142,9 +167,13 @@ fn detect_decoy_tampering(function_name: &str) {
 fn calculate_checksum(ptr: *const u8, len: usize) -> u32 {
     let mut checksum = 0u32;
 
+    // SAFETY: We are reading from a function pointer that was obtained from a 
+    // valid Rust function address. The pointer is guaranteed to be valid for
+    // reading `len` bytes since we control the function addresses passed in.
+    // Using volatile reads to prevent compiler optimization that could 
+    // interfere with integrity checking.
     unsafe {
         for i in 0..len {
-            // Use volatile read to prevent optimization
             let byte = std::ptr::read_volatile(ptr.add(i));
             checksum = checksum.wrapping_add(byte as u32).wrapping_mul(31).wrapping_add(1);
         }
@@ -155,6 +184,10 @@ fn calculate_checksum(ptr: *const u8, len: usize) -> u32 {
 
 /// Check if the function has been patched with common patch patterns
 fn is_function_patched(ptr: *const u8) -> bool {
+    // SAFETY: We are reading from a function pointer that was obtained from a
+    // valid Rust function address within this module. The pointer is guaranteed
+    // to be valid executable memory. We only read the first few bytes which
+    // are guaranteed to exist for any valid function.
     unsafe {
         // Check for common patch patterns in the first few bytes
         for i in 0..5 {

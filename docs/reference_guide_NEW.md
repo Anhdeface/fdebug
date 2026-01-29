@@ -175,6 +175,121 @@ pub fn initialize_veh_protection();
 pub const get_dynamic_seed(): u32;
 ```
 
+### String Obfuscation Macro (`dynamic_str!`)
+
+```rust
+/// Zero-Static-Trace String Obfuscation Macro
+/// 
+/// Creates encrypted strings that leave no trace in binary's .rdata section.
+/// Decryption happens at runtime via TinyVM bytecode execution.
+/// 
+/// **Features**:
+/// - Compile-time polymorphic encryption (3 transformation types)
+/// - Hardware-locked decryption via get_dynamic_seed()
+/// - Volatile stack reconstruction (defeats memory analysis)
+/// - RAII zeroization via SecureBuffer<N> return type
+/// 
+/// **Example**:
+/// ```rust
+/// use fdebug::dynamic_str;
+/// 
+/// fn get_api_key() -> String {
+///     let secure_buffer = dynamic_str!("sk_live_12345");
+///     String::from_utf8_lossy(&secure_buffer.as_ref()).to_string()
+/// }
+/// ```
+/// 
+/// **Transformation Types** (selected by file/line hash):
+/// - XOR-Rotate: `val ^= key; val = val.rotate_left(3)`
+/// - Subtract-XOR: `val = val.wrapping_sub(key); val ^= 0x55`
+/// - Bit-Flip-Add: `val = !val; val = val.wrapping_add(key)`
+#[macro_export]
+macro_rules! dynamic_str {
+    ($s:expr) => {{ /* ... */ }}
+}
+
+/// Aliases (backward compatibility)
+#[macro_export] macro_rules! enc_str { ($s:expr) => { dynamic_str!($s) } }
+#[macro_export] macro_rules! enc_string { ($s:expr) => { dynamic_str!($s) } }
+```
+
+### SecureBuffer<N> Structure
+
+```rust
+/// RAII-protected stack buffer with automatic volatile zeroization
+/// 
+/// **Security Properties**:
+/// - No heap allocation (stack-only)
+/// - Two-pass volatile zeroization on drop
+/// - Memory barrier protection against optimizer
+/// 
+/// **Usage**:
+/// ```rust
+/// // Created automatically by dynamic_str! macro
+/// let buffer: SecureBuffer<13> = dynamic_str!("Hello, World!");
+/// 
+/// // Access data
+/// let slice: &[u8] = buffer.as_ref();
+/// 
+/// // Automatic cleanup when buffer goes out of scope
+/// // 1. Volatile zeros written to all bytes
+/// // 2. Random entropy written (cold-boot defense)
+/// ```
+pub struct SecureBuffer<const N: usize> {
+    data: [u8; N],
+    len: usize,
+}
+
+impl<const N: usize> SecureBuffer<N> {
+    /// Create new secure buffer from encrypted data
+    pub fn from_encrypted(encrypted: [u8; N], len: usize) -> Self;
+    
+    /// Get slice of valid data
+    pub fn as_ref(&self) -> &[u8];
+    
+    /// Get mutable slice (for in-place decryption)
+    pub fn as_mut(&mut self) -> &mut [u8];
+}
+
+impl<const N: usize> Drop for SecureBuffer<N> {
+    fn drop(&mut self) {
+        // Pass 1: Volatile zero fill
+        for i in 0..N {
+            unsafe { write_volatile(&mut self.data[i], 0x00); }
+        }
+        compiler_fence(Ordering::SeqCst);
+        
+        // Pass 2: Random entropy fill (cold-boot defense)
+        let entropy = get_cpu_entropy();
+        for i in 0..N {
+            unsafe { write_volatile(&mut self.data[i], (entropy >> (i % 4 * 8)) as u8); }
+        }
+        compiler_fence(Ordering::SeqCst);
+    }
+}
+```
+
+### Anti-Dump Functions
+
+```rust
+/// Initialize anti-dump protection
+/// 
+/// **Effects**:
+/// - Caches PE metadata for post-header-erasure access
+/// - Erases DOS and PE headers with **random entropy** (defeats memory dumps)
+/// - Spawns 8 decoy memory regions with PAGE_GUARD
+/// - Registers VEH to catch guard page violations
+/// 
+/// **Returns**: true on success or if already initialized.
+pub fn init_anti_dump() -> bool;
+
+/// Force cache PE metadata before header erasure
+/// 
+/// **Usage**: Called automatically by init_anti_dump(), but can be called
+/// manually if you need PE integrity checks before anti-dump initialization.
+pub fn force_cache_pe_metadata() -> bool;
+```
+
 ---
 
 ## Detection Severity Levels

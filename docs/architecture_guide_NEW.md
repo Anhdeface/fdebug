@@ -1164,6 +1164,279 @@ pub fn decay_threat_score() {
 
 ---
 
+## Architecture Layer 6: Advanced Stealth Mechanisms
+
+Beyond detection and obfuscation, fdebug implements several advanced stealth mechanisms that operate at the lowest OS and hardware levels.
+
+### 6.1 Zero-Static-Trace String Obfuscation (`dynamic_str!`)
+
+**The Problem**: Traditional encrypted strings leave patterns in the `.rdata` section:
+
+```rust
+// ❌ VULNERABLE: Static array visible in binary
+const ENCRYPTED_MSG: [u8; 13] = [0xA3, 0xB4, 0xC5, ...];  // Still analyzable
+```
+
+**The Solution**: `dynamic_str!` achieves complete zero-static-trace obfuscation:
+
+```rust
+// ✅ SECURE: No data in binary, volatile stack operations only
+let secret = dynamic_str!("API_KEY_12345");  // Reconstructed at runtime via TinyVM
+```
+
+**Technical Implementation**:
+
+1. **Compile-Time Shuffling**: Each string location selects 1 of 3 transformation types:
+   - **XOR-Rotate**: `val ^= key; val = val.rotate_left(3)`
+   - **Subtract-XOR**: `val = val.wrapping_sub(key); val ^= 0x55`
+   - **Bit-Flip-Add**: `val = !val; val = val.wrapping_add(key)`
+
+2. **POISON_SEED Integration**: Decryption key includes `get_dynamic_seed()`:
+   ```rust
+   let key = COMPILE_TIME_SALT ^ get_dynamic_seed();
+   // If POISON_SEED is corrupted (anti-debug triggered), result is garbage
+   ```
+
+3. **Volatile Stack Reconstruction**: Each byte is pushed via `write_volatile`:
+   ```rust
+   for i in 0..len {
+       write_volatile(buffer.as_mut_ptr().add(i), decrypted_byte);
+   }
+   ```
+
+4. **TinyVM Bytecode Execution**: The reconstruction happens inside the VM:
+   ```rust
+   // Bytecode: PUSH LEN -> PUSH ADDR -> PUSH KEY -> PUSH TYPE -> RECONSTRUCT -> EXIT
+   vm_execute(&bytecode[..bc_idx], bc_key, hw_seed);
+   ```
+
+**Result**: Strings cannot be found via static analysis (no `.rdata` entry) or memory dumps (volatile operations are not cached).
+
+---
+
+### 6.2 SecureBuffer RAII with Volatile Zeroization
+
+**Problem**: Rust's `Drop` doesn't guarantee memory erasure; optimizer may remove "dead" writes.
+
+**Solution**: `SecureBuffer<N>` wraps stack-allocated buffers with two-pass volatile zeroization:
+
+```rust
+pub struct SecureBuffer<const N: usize> {
+    data: [u8; N],
+    len: usize,
+}
+
+impl<const N: usize> Drop for SecureBuffer<N> {
+    fn drop(&mut self) {
+        // Pass 1: Zero with volatile writes
+        for i in 0..N {
+            unsafe { write_volatile(&mut self.data[i], 0x00); }
+        }
+        compiler_fence(Ordering::SeqCst);
+        
+        // Pass 2: Randomize with entropy (defeats cold-boot attacks)
+        let entropy = get_cpu_entropy();
+        for i in 0..N {
+            unsafe { write_volatile(&mut self.data[i], (entropy >> (i % 4 * 8)) as u8); }
+        }
+        compiler_fence(Ordering::SeqCst);
+    }
+}
+```
+
+**Defense Properties**:
+- **No Heap Allocation**: Stack-only prevents heap-scanning attacks
+- **Volatile Writes**: Optimizer cannot remove the zeroization
+- **Two-Pass Erasure**: First zeros, then randomizes (defeats residual data recovery)
+- **Memory Barriers**: `compiler_fence` prevents reordering
+
+---
+
+### 6.3 Indirect Syscall Engine (Anti-Dump)
+
+**Problem**: Standard `VirtualProtect` calls are easily hooked by security tools:
+
+```rust
+// ❌ DETECTABLE: ntdll!NtProtectVirtualMemory is hooked by EDR
+VirtualProtect(addr, size, PAGE_NOACCESS, &old_protect);
+```
+
+**Solution**: Indirect syscalls bypass all user-mode hooks:
+
+```rust
+// ✅ STEALTH: Direct system call without touching ntdll
+indirect_nt_protect_virtual_memory(process_handle, &mut addr, &mut size, protect, &mut old);
+```
+
+**Technical Implementation** (anti_dump.rs):
+
+1. **SSN Resolution**: Find syscall number from `ntdll.dll` in-memory:
+   ```rust
+   // Parse ntdll's EAT to find NtProtectVirtualMemory
+   let func_addr = find_exported_function("NtProtectVirtualMemory");
+   
+   // Read the syscall number from the function prologue:
+   // mov r10, rcx
+   // mov eax, SSN  <-- We extract this value
+   let ssn = *(func_addr.offset(4) as *const u32);
+   ```
+
+2. **Syscall Instruction Gadget**: Find a `syscall; ret` instruction inside ntdll:
+   ```rust
+   // Search for pattern: 0F 05 C3 (syscall; ret)
+   for offset in 0..ntdll_size {
+       if bytes[offset] == 0x0F && bytes[offset+1] == 0x05 && bytes[offset+2] == 0xC3 {
+           syscall_addr = ntdll_base + offset;
+           break;
+       }
+   }
+   ```
+
+3. **Indirect Call**: Jump to the gadget with proper register setup:
+   ```rust
+   asm!(
+       "mov r10, rcx",      // First argument
+       "mov eax, {ssn:e}",  // Syscall number
+       "call {addr}",       // Jump to syscall gadget (not direct syscall instruction)
+       ssn = in(reg) syscall_id,
+       addr = in(reg) syscall_addr,
+       // ... register arguments
+   );
+   ```
+
+**Why This Defeats EDR**:
+- No import for `NtProtectVirtualMemory` in IAT
+- No call to `ntdll.dll` code (jumps directly to gadget)
+- Returns directly from kernel-mode
+- Hooks in ntdll are never triggered
+
+---
+
+### 6.4 PE Header Erasure with Cached Metadata
+
+**Problem**: Memory dump tools read PE headers to reconstruct executables:
+
+```
+dumper.exe -p my_app.exe → Produces valid .exe file
+```
+
+**Solution**: Surgically erase PE headers after caching essential metadata:
+
+```rust
+pub fn init_anti_dump() {
+    // 1. Cache .text section metadata BEFORE destroying headers
+    pe_integrity::force_cache_pe_metadata();  // Stores RVA + size in OnceLock
+    
+    // 2. Erase DOS header and PE signature
+    erase_critical_headers(base_addr);
+}
+
+fn erase_critical_headers(base: *mut u8) {
+    // Change memory protection to RW
+    protected_virtual_protect(base, 0x1000, PAGE_READWRITE, &mut old);
+    
+    // Zero the DOS header (first 64 bytes)
+    for i in 0..64 {
+        unsafe { *base.offset(i) = 0x00; }
+    }
+    
+    // Zero the PE signature and file header
+    let pe_offset = /* from cached e_lfanew */;
+    for i in 0..256 {
+        unsafe { *base.offset(pe_offset + i) = 0x00; }
+    }
+    
+    // Restore to PAGE_READONLY
+    protected_virtual_protect(base, 0x1000, PAGE_READONLY, &mut old);
+}
+```
+
+**Key Innovation**: `force_cache_pe_metadata()` stores `.text` section RVA and size **before** headers are destroyed. This allows `get_text_section_hash()` to continue working for PE integrity checks.
+
+**Result**: 
+- Memory dumps produce invalid PE files
+- Rebuilding headers requires manual reverse engineering
+- PE integrity hash still works (cached values)
+
+---
+
+### 6.5 Guard Page Trap System
+
+**Problem**: Memory scanning tools enumerate process memory looking for secrets.
+
+**Solution**: Deploy decoy regions with `PAGE_GUARD` protection:
+
+```rust
+fn spawn_decoy_traps() {
+    for _ in 0..8 {
+        // Allocate 4KB decoy region
+        let decoy = VirtualAlloc(null_mut(), 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        
+        // Fill with fake "secrets" to attract scanners
+        fill_with_decoy_data(decoy, 4096);
+        
+        // Set PAGE_GUARD (access triggers exception)
+        VirtualProtect(decoy, 4096, PAGE_READWRITE | PAGE_GUARD, &mut old);
+        
+        // Track for VEH handler
+        DECOY_REGIONS.lock().push((decoy as usize, 4096));
+    }
+}
+```
+
+**VEH Handler** catches access:
+
+```rust
+unsafe extern "system" fn veh_handler(ptrs: *mut EXCEPTION_POINTERS) -> i32 {
+    let record = (*ptrs).ExceptionRecord;
+    
+    if (*record).ExceptionCode == STATUS_GUARD_PAGE_VIOLATION {
+        let fault_addr = (*record).ExceptionInformation[1] as usize;
+        
+        // Check if it's one of our decoy regions
+        if is_decoy_region(fault_addr) {
+            // Memory scanner detected!
+            poison_encryption_on_dump_attempt();
+            add_suspicion(DetectionSeverity::Critical);
+        }
+        
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    
+    EXCEPTION_CONTINUE_SEARCH
+}
+```
+
+**Attack Detection Flow**:
+```
+Memory Scanner → Touches decoy region
+                 ↓
+                 STATUS_GUARD_PAGE_VIOLATION
+                 ↓
+                 VEH catches exception
+                 ↓
+                 POISON_SEED corrupted
+                 ↓
+                 All future decryption fails silently
+```
+
+---
+
+### 6.6 Defense Summary
+
+The Advanced Stealth Mechanisms defeat forensic attacks:
+
+| Attack | Defense |
+| --- | --- |
+| **String extraction** | `dynamic_str!` leaves no trace in binary |
+| **Memory dump** | PE headers erased, Guard Page traps |
+| **Cold-boot attacks** | SecureBuffer two-pass zeroization |
+| **EDR hooks** | Indirect syscalls bypass ntdll |
+| **Process scanning** | Decoy regions with PAGE_GUARD |
+| **Heap analysis** | Stack-only SecureBuffer (no heap) |
+
+---
+
 ## Summary
 
 fdebug provides **five concentric layers of protection**:

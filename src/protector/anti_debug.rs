@@ -12,11 +12,13 @@
 // github.com/anhdeface
 // MIT License
 use std::cell::RefCell;
-use crate::protector::tiny_vm::{VmOp, vm_execute};
+use crate::protector::tiny_vm::{VmOp, vm_execute, SecureBuffer};
+use crate::dynamic_str; // Import from crate root if needed, or just use it. 
 
 
 use std::sync::OnceLock;
 use std::time::Instant;
+use crate::protector::global_state::*;
 
 
 static LOAD_TIME: OnceLock<Instant> = OnceLock::new();
@@ -26,45 +28,9 @@ fn get_load_time() -> &'static Instant {
 }
 
 // Manual FFI and constants for VEH to ensure reliability across environments
-#[link(name = "kernel32")]
-extern "system" {
-    fn AddVectoredExceptionHandler(First: u32, Handler: Option<unsafe extern "system" fn(*mut EXCEPTION_POINTERS) -> i32>) -> *mut std::ffi::c_void;
-}
+// AddVectoredExceptionHandler moved to global_state.rs
 
-#[repr(C)]
-#[allow(non_snake_case)]
-pub struct EXCEPTION_POINTERS {
-    pub ExceptionRecord: *mut EXCEPTION_RECORD,
-    pub ContextRecord: *mut CONTEXT,
-}
-
-#[repr(C)]
-#[allow(non_snake_case)]
-pub struct EXCEPTION_RECORD {
-    pub ExceptionCode: u32,
-    pub ExceptionFlags: u32,
-    pub ExceptionRecord: *mut EXCEPTION_RECORD,
-    pub ExceptionAddress: *mut std::ffi::c_void,
-    pub NumberParameters: u32,
-    pub ExceptionInformation: [usize; 15],
-}
-
-#[repr(C)]
-#[cfg(target_arch = "x86_64")]
-#[allow(non_snake_case)]
-pub struct CONTEXT {
-    pub P1Home: u64, pub P2Home: u64, pub P3Home: u64, pub P4Home: u64, pub P5Home: u64, pub P6Home: u64,
-    pub ContextFlags: u32, pub MxCsr: u32,
-    pub SegCs: u16, pub SegDs: u16, pub SegEs: u16, pub SegFs: u16, pub SegGs: u16, pub SegSs: u16,
-    pub EFlags: u32,
-    pub Dr0: u64, pub Dr1: u64, pub Dr2: u64, pub Dr3: u64, pub Dr6: u64, pub Dr7: u64,
-    pub Rax: u64, pub Rcx: u64, pub Rdx: u64, pub Rbx: u64, pub Rsp: u64, pub Rbp: u64, pub Rsi: u64, pub Rdi: u64,
-    pub R8: u64, pub R9: u64, pub R10: u64, pub R11: u64, pub R12: u64, pub R13: u64, pub R14: u64, pub R15: u64,
-    pub Rip: u64,
-    pub Header: [u128; 2], pub Legacy: [u128; 8], pub Xmm0: u128, pub Xmm1: u128, pub Xmm2: u128, pub Xmm3: u128,
-    pub Xmm4: u128, pub Xmm5: u128, pub Xmm6: u128, pub Xmm7: u128, pub Xmm8: u128, pub Xmm9: u128, pub Xmm10: u128,
-    pub Xmm11: u128, pub Xmm12: u128, pub Xmm13: u128, pub Xmm14: u128, pub Xmm15: u128,
-}
+// CONTEXT moved to global_state.rs
 
 const EXCEPTION_CONTINUE_SEARCH: i32 = 0;
 const EXCEPTION_BREAKPOINT: u32 = 0x80000003;
@@ -294,6 +260,23 @@ fn calibrate_hard_threshold() -> u64 {
     adaptive_threshold
 }
 
+/// Demonstration of the ultimate string obfuscation system
+/// This function uses the new dynamic_str! macro which achieves zero static trace
+pub fn demonstrate_dynamic_strings() {
+    // String is decrypted on the stack and zeroized after use
+    let secret = dynamic_str!("Top Secret Debugger Protection Active");
+    
+    // We can use the buffer as a slice
+    let msg = String::from_utf8_lossy(&secret);
+    
+    if DIAGNOSTIC_MODE.load(Ordering::Relaxed) {
+        // In a real scenario, we'd log this securely
+        let _ = msg.len();
+    }
+    
+    // Once 'secret' goes out of scope, it is automatically wiped from memory
+}
+
 /// Calculate jitter using Mean Absolute Deviation (MAD) for robust statistics
 /// This measures timing consistency - debuggers cause high jitter due to interruption
 #[inline(always)]
@@ -438,7 +421,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 // Import global state from the global_state module
 // Import global state from the global_state module
 use crate::protector::global_state::*;
-use crate::protector::global_state::DetectionSeverity;
+use crate::protector::recalculate_global_integrity;
 
 /// Distributed detection state using atomic variables for cross-thread synchronization
 pub struct DetectionVector {
@@ -1516,9 +1499,6 @@ pub fn check_decoy_tampering() -> bool {
 /// One-time VEH protection initialization
 /// Should be called at application startup (in main)
 pub fn initialize_veh_protection() {
-    // Initialize the global DetectionVector with a default seed
-    init_global_detection_vector(0x12345678);
-
     // Initialize the global state through the global_state module
     crate::protector::global_state::initialize_veh_protection();
 
@@ -2247,7 +2227,7 @@ pub fn register_veh_handler() {
 extern "system" fn veh_handler(exception_info: *mut EXCEPTION_POINTERS) -> i32 {
     let record = unsafe { (*exception_info).ExceptionRecord };
     let context = unsafe { (*exception_info).ContextRecord };
-    
+
     let code = unsafe { (*record).ExceptionCode };
     let address = unsafe { (*record).ExceptionAddress as usize };
 
@@ -2262,14 +2242,14 @@ extern "system" fn veh_handler(exception_info: *mut EXCEPTION_POINTERS) -> i32 {
         use windows::Win32::System::LibraryLoader::GetModuleHandleW;
         use windows::Win32::System::ProcessStatus::{GetModuleInformation, MODULEINFO};
         use windows::Win32::System::Threading::GetCurrentProcess;
-        
+
         let h_module = GetModuleHandleW(None).unwrap_or_default();
         let mut mod_info = MODULEINFO::default();
-        
+
         if GetModuleInformation(GetCurrentProcess(), h_module, &mut mod_info, std::mem::size_of::<MODULEINFO>() as u32).is_ok() {
             let base = mod_info.lpBaseOfDll as usize;
             let end = base + mod_info.SizeOfImage as usize;
-            
+
             // If address is outside our module, ignore (likely system/loader artifact)
             if address < base || address >= end {
                 return EXCEPTION_CONTINUE_SEARCH;
@@ -2277,24 +2257,33 @@ extern "system" fn veh_handler(exception_info: *mut EXCEPTION_POINTERS) -> i32 {
         }
     }
 
-    // 3. Detect Software Breakpoint (INT3)
+    // 3. Handle Guard Page Violation (Anti-Dump Protection)
+    const STATUS_GUARD_PAGE_VIOLATION: u32 = 0x80000001;
+    if code == STATUS_GUARD_PAGE_VIOLATION {
+        // Call the anti-dump handler for guard page violations
+        crate::protector::anti_dump::handle_guard_page_violation();
+        // Continue execution (Silent Defense - don't exit)
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    // 4. Detect Software Breakpoint (INT3)
     if code == EXCEPTION_BREAKPOINT {
         add_suspicion(DetectionSeverity::High);
         GLOBAL_ENCRYPTION_KEY.fetch_xor(0x55, Ordering::SeqCst);
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    // 4. Detect Hardware Breakpoints (DR0 - DR3)
+    // 5. Detect Hardware Breakpoints (DR0 - DR3)
     if code == EXCEPTION_SINGLE_STEP {
         let dr_active = unsafe {
-            (*context).Dr0 != 0 || (*context).Dr1 != 0 || 
+            (*context).Dr0 != 0 || (*context).Dr1 != 0 ||
             (*context).Dr2 != 0 || (*context).Dr3 != 0
         };
 
         if dr_active {
             POISON_SEED.store(0xDEADC0DEBADC0DE, Ordering::SeqCst);
             add_suspicion(DetectionSeverity::Critical);
-            
+
             unsafe {
                 (*context).Dr0 = 0;
                 (*context).Dr1 = 0;

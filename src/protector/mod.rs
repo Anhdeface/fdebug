@@ -32,11 +32,24 @@ pub mod anti_debug;
 pub mod global_state;
 #[cfg(target_os = "windows")]
 pub mod decoy_system;
+#[cfg(target_os = "windows")]
+pub mod anti_dump;
 
 #[cfg(target_os = "windows")]
 pub use tiny_vm::*;
 #[cfg(target_os = "windows")]
 pub use anti_debug::*;
+
+/// Initialize the unified memory stealth protection system
+#[cfg(target_os = "windows")]
+pub fn init_anti_dump() -> bool {
+    use crate::protector::anti_dump;
+    anti_dump::init_anti_dump()
+}
+
+// ============================================================================
+// HIDDEN PE HEADER VERIFICATION MOVED TO PROTECTOR IMPL
+// ============================================================================
 
 #[cfg(not(target_os = "windows"))]
 pub struct Protector {
@@ -111,7 +124,7 @@ where
         // Perform watchdog checks to detect if decoy functions have been modified
         // This is done more systematically to ensure monitoring happens regularly
         // The watchdog monitors the decoy functions externally without them knowing
-        if get_cpu_entropy() % 2 == 0 {  // Approximately 1 in 2 chance for more frequent monitoring
+        if get_internal_entropy() % 2 == 0 {  // Approximately 1 in 2 chance for more frequent monitoring
             decoy_system::watchdog_check_decoys();
         }
 
@@ -139,9 +152,16 @@ impl Protector {
         static INIT: Once = Once::new();
 
         INIT.call_once(|| {
-            // Initialize the protection system with the provided seed
+            // println!("[DEBUG] Protector: Initializing global detection vector...");
             anti_debug::init_global_detection_vector(seed);
+            
+            // println!("[DEBUG] Protector: Initializing VEH protection...");
             anti_debug::initialize_veh_protection();
+            
+            // println!("[DEBUG] Protector: Initializing anti-dump...");
+            crate::protector::anti_dump::init_anti_dump();
+            
+            // println!("[DEBUG] Protector: Initialization complete");
         });
 
         Protector {
@@ -201,6 +221,36 @@ impl Protector {
             base_result ^ ((token % 2) == 0)
         })
     }
+
+    pub fn get_detection_details(&self) -> global_state::DetectionDetails {
+        global_state::get_detection_details()
+    }
+
+    // Verify stealth state (Anti-Dump Success Check)
+    // Returns true if secure, false if compromised
+    #[inline(always)]
+    fn verify_stealth_state(&self) -> bool {
+        #[cfg(target_os = "windows")]
+        unsafe {
+             // HIDDEN CHECK via FFI
+             // We manually re-declare GetModuleHandleW here to avoid any external interference
+             #[link(name = "kernel32")]
+             extern "system" {
+                 fn GetModuleHandleW(lpModuleName: *const u16) -> *mut u8;
+             }
+             
+             let base = GetModuleHandleW(std::ptr::null());
+             if base.is_null() { return false; }
+             
+             // Check if MZ signature (0x5A4D) is present
+             // If PRESENT (0x5A4D), then Anti-Dump FAILED.
+             // If ERASED (Garbage), then Anti-Dump PASSED.
+             let magic = std::ptr::read_volatile(base as *const u16);
+             std::hint::black_box(magic != 0x5A4D)
+        }
+        #[cfg(not(target_os = "windows"))]
+        true
+    }
 }
 
 /// A container that requires a transformation key to access its data.
@@ -237,6 +287,14 @@ impl<T> ShieldedExecution<T> for Protector {
     {
         // 1. Mandatory Heartbeat pulse
         self.heartbeat();
+
+        // 2. Hidden Anti-Dump Verification (The "Cannot Bypass" Check)
+        // If Anti-Dump failed to erase headers (or wasn't called), we poison everything.
+        #[cfg(target_os = "windows")]
+        if !self.verify_stealth_state() {
+            // Anti-Dump failed or was bypassed -> Trigger immediate corruption
+            global_state::poison_encryption_on_dump_attempt();
+        }
 
         // 2. Derivation of TRANSFORMATION_KEY
         // This key is strictly dependent on the environment being clean.
@@ -281,7 +339,10 @@ use std::fmt::Display;
 // Re-export functions from global_state module
 pub use crate::protector::global_state::{
     add_suspicion,
-    get_current_encryption_key,
+    log_checkpoint_trigger,
+    DetectionSeverity,
+    EXCEPTION_POINTERS,
+    EXCEPTION_RECORD,
     get_current_vm_key,
     get_suspicion_score,
     get_combined_score,
@@ -488,7 +549,7 @@ fn opaque_predicate_branch(condition: bool) -> bool {
 }
 
 /// Get CPU entropy for randomization (imported from anti_debug module)
-fn get_cpu_entropy() -> u32 {
+fn get_internal_entropy() -> u32 {
     use crate::protector::anti_debug::get_cpu_entropy as cpu_entropy;
     cpu_entropy()
 }
@@ -659,18 +720,37 @@ impl Corruptible for f64 {
 }
 
 
-// Define the setup macro
+
+
+
+
+// ============================================================================
+// MANDATORY MACRO - The Only Way to Instantiate
+// ============================================================================
+
+/// Macro to safely construct the Protector.
+/// Enforces Anti-Dump initialization before returning the instance.
 #[macro_export]
 macro_rules! setup_anti_debug {
-    ($seed:expr) => {
+    ($seed:expr) => {{
+        // 1. Force Anti-Dump Initialization
+        #[cfg(target_os = "windows")]
+        {
+            let status = $crate::protector::init_anti_dump();
+            // We don't panic on false, because init_anti_dump returns true if already init.
+            // But we keep the return value for internal logic if needed.
+            std::hint::black_box(status);
+        }
+
+        // 2. Create Protector
         $crate::protector::Protector::new($seed)
-    };
+    }};
 }
 
 // Export the setup macro
 pub use setup_anti_debug;
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(target_os = "windows"))] // Structs moved to global_state.rs
 pub struct DetectionDetails {
     pub is_debugged: bool,
     pub score: u32,

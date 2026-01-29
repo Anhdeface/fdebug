@@ -1,0 +1,765 @@
+    Checking fuckDebug v0.1.0 (D:\Documents\fuckDebug\fdebug)
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1339 |         op if op == VmOp::op_load_imm() => String::from_utf8_lossy(&enc_string!("LOAD_IMM")).into_owned(),
+     |                                                                     ----------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1340 |         op if op == VmOp::op_read_gs_offset() => String::from_utf8_lossy(&enc_string!("READ_GS_OFFSET")).into_owned(),
+     |                                                                           ----------------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1341 |         op if op == VmOp::op_read_mem_u8() => String::from_utf8_lossy(&enc_string!("READ_MEM_U8")).into_owned(),
+     |                                                                        -------------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1342 |         op if op == VmOp::op_read_mem_u32() => String::from_utf8_lossy(&enc_string!("READ_MEM_U32")).into_owned(),
+     |                                                                         --------------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1343 |         op if op == VmOp::op_read_mem_u64() => String::from_utf8_lossy(&enc_string!("READ_MEM_U64")).into_owned(),
+     |                                                                         --------------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1344 |         op if op == VmOp::op_rdtsc() => String::from_utf8_lossy(&enc_string!("RDTSC")).into_owned(),
+     |                                                                  -------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1345 |         op if op == VmOp::op_cpuid() => String::from_utf8_lossy(&enc_string!("CPUID")).into_owned(),
+     |                                                                  -------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1346 |         op if op == VmOp::op_in_port() => String::from_utf8_lossy(&enc_string!("IN_PORT")).into_owned(),
+     |                                                                    ---------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1347 |         op if op == VmOp::op_out_port() => String::from_utf8_lossy(&enc_string!("OUT_PORT")).into_owned(),
+     |                                                                     ----------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1348 |         op if op == VmOp::op_add() => String::from_utf8_lossy(&enc_string!("ADD")).into_owned(),
+     |                                                                ------------------ in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1349 |         op if op == VmOp::op_sub() => String::from_utf8_lossy(&enc_string!("SUB")).into_owned(),
+     |                                                                ------------------ in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1350 |         op if op == VmOp::op_xor() => String::from_utf8_lossy(&enc_string!("XOR")).into_owned(),
+     |                                                                ------------------ in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1351 |         op if op == VmOp::op_push() => String::from_utf8_lossy(&enc_string!("PUSH")).into_owned(),
+     |                                                                 ------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1352 |         op if op == VmOp::op_pop() => String::from_utf8_lossy(&enc_string!("POP")).into_owned(),
+     |                                                                ------------------ in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1353 |         op if op == VmOp::op_dup() => String::from_utf8_lossy(&enc_string!("DUP")).into_owned(),
+     |                                                                ------------------ in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1354 |         op if op == VmOp::op_swap() => String::from_utf8_lossy(&enc_string!("SWAP")).into_owned(),
+     |                                                                 ------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1355 |         op if op == VmOp::op_cmp_eq() => String::from_utf8_lossy(&enc_string!("CMP_EQ")).into_owned(),
+     |                                                                   --------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1356 |         op if op == VmOp::op_cmp_ne() => String::from_utf8_lossy(&enc_string!("CMP_NE")).into_owned(),
+     |                                                                   --------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1357 |         op if op == VmOp::op_cmp_gt() => String::from_utf8_lossy(&enc_string!("CMP_GT")).into_owned(),
+     |                                                                   --------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1358 |         op if op == VmOp::op_cmp_lt() => String::from_utf8_lossy(&enc_string!("CMP_LT")).into_owned(),
+     |                                                                   --------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1359 |         op if op == VmOp::op_and() => String::from_utf8_lossy(&enc_string!("AND")).into_owned(),
+     |                                                                ------------------ in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1360 |         op if op == VmOp::op_or() => String::from_utf8_lossy(&enc_string!("OR")).into_owned(),
+     |                                                               ----------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1361 |         op if op == VmOp::op_not() => String::from_utf8_lossy(&enc_string!("NOT")).into_owned(),
+     |                                                                ------------------ in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1362 |         op if op == VmOp::op_shl() => String::from_utf8_lossy(&enc_string!("SHL")).into_owned(),
+     |                                                                ------------------ in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1363 |         op if op == VmOp::op_shr() => String::from_utf8_lossy(&enc_string!("SHR")).into_owned(),
+     |                                                                ------------------ in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1364 |         op if op == VmOp::op_jump() => String::from_utf8_lossy(&enc_string!("JUMP")).into_owned(),
+     |                                                                 ------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1365 |         op if op == VmOp::op_jz() => String::from_utf8_lossy(&enc_string!("JZ")).into_owned(),
+     |                                                               ----------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1366 |         op if op == VmOp::op_jnz() => String::from_utf8_lossy(&enc_string!("JNZ")).into_owned(),
+     |                                                                ------------------ in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1367 |         op if op == VmOp::op_call() => String::from_utf8_lossy(&enc_string!("CALL")).into_owned(),
+     |                                                                 ------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1368 |         op if op == VmOp::op_ret() => String::from_utf8_lossy(&enc_string!("RET")).into_owned(),
+     |                                                                ------------------ in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1369 |         op if op == VmOp::op_exit() => String::from_utf8_lossy(&enc_string!("EXIT")).into_owned(),
+     |                                                                 ------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1370 |         op if op == VmOp::op_garbage() => String::from_utf8_lossy(&enc_string!("GARBAGE")).into_owned(),
+     |                                                                    ---------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1371 |         op if op == VmOp::op_poly_junk() => String::from_utf8_lossy(&enc_string!("POLY_JUNK")).into_owned(),
+     |                                                                      ------------------------ in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1372 |         _ => String::from_utf8_lossy(&enc_string!("UNKNOWN_OPCODE")).into_owned(),
+     |                                       ----------------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1379 |         "invalid_opcode" => String::from_utf8_lossy(&enc_string!("Invalid opcode encountered in bytecode")).into_owned(),
+     |                                                      ----------------------------------------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1380 |         "stack_overflow" => String::from_utf8_lossy(&enc_string!("Stack overflow in virtual machine")).into_owned(),
+     |                                                      ------------------------------------------------ in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1381 |         "stack_underflow" => String::from_utf8_lossy(&enc_string!("Stack underflow in virtual machine")).into_owned(),
+     |                                                       ------------------------------------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1382 |         "memory_access_violation" => String::from_utf8_lossy(&enc_string!("Memory access violation in VM")).into_owned(),
+     |                                                               -------------------------------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+    --> src\protector\tiny_vm.rs:181:81
+     |
+ 144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |                 -------- `_hw_seed` defined here
+...
+ 181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+     |                                                                                 ^^^^^^^
+...
+1383 |         _ => String::from_utf8_lossy(&enc_string!("Unknown error in virtual machine")).into_owned(),
+     |                                       ----------------------------------------------- in this macro invocation
+     |
+     = note: this error originates in the macro `$crate::dynamic_str` which comes from the expansion of the macro `enc_string` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+     |
+ 144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+ 144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+     |
+
+error[E0425]: cannot find value `hw_seed` in this scope
+   --> src\protector\tiny_vm.rs:181:81
+    |
+144 |             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+    |                 -------- `_hw_seed` defined here
+...
+181 |             $crate::protector::tiny_vm::vm_execute(&bytecode[..bc_idx], bc_key, hw_seed as u64);
+    |                                                                                 ^^^^^^^
+    |
+   ::: src\protector\anti_debug.rs:267:18
+    |
+267 |     let secret = dynamic_str!("Top Secret Debugger Protection Active");
+    |                  ----------------------------------------------------- in this macro invocation
+    |
+    = note: this error originates in the macro `dynamic_str` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: the leading underscore in `_hw_seed` marks it as unused, consider renaming it to `hw_seed`
+    |
+144 -             let _hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+144 +             let hw_seed = get_dynamic_seed(); // Keep call for side-effects in global state
+    |
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `fuckDebug` (lib) due to 40 previous errors

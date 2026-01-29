@@ -1,0 +1,13 @@
+    Checking fuckDebug v0.1.0 (D:\Documents\fuckDebug\fdebug)
+error: unexpected closing delimiter: `}`
+   --> src\protector\mod.rs:724:1
+    |
+702 |     fn verify_stealth_state(&self) -> bool {
+    |                                            - this opening brace...
+...
+723 |     }
+    |     - ...matches this closing brace
+724 | }
+    | ^ unexpected closing delimiter
+
+error: could not compile `fuckDebug` (lib) due to 1 previous error
