@@ -34,6 +34,8 @@ pub mod global_state;
 pub mod decoy_system;
 #[cfg(target_os = "windows")]
 pub mod anti_dump;
+#[cfg(target_os = "windows")]
+pub mod enhanced_veh;
 
 #[cfg(target_os = "windows")]
 pub use tiny_vm::*;
@@ -42,9 +44,20 @@ pub use anti_debug::*;
 
 /// Initialize the unified memory stealth protection system
 #[cfg(target_os = "windows")]
-pub fn init_anti_dump() -> bool {
-    use crate::protector::anti_dump;
-    anti_dump::init_anti_dump()
+pub fn init_protector() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+
+    INIT.call_once(|| {
+        // 1. Initialize PE Integrity (Get .text bounds)
+        crate::protector::pe_integrity::get_text_section_bounds();
+
+        // 2. Initialize Anti-Dump (Traps, but NO VEH registration)
+        crate::protector::anti_dump::init_anti_dump();
+
+        // 3. Initialize Master VEH (Register the single handler)
+        enhanced_veh::init_master_veh();
+    });
 }
 
 // ============================================================================
@@ -148,20 +161,17 @@ pub struct Protector {
 #[cfg(target_os = "windows")]
 impl Protector {
     pub fn new(seed: u32) -> Self {
-        use std::sync::Once;
-        static INIT: Once = Once::new();
+        // Ensure core protection is initialized (VEH, Traps, etc.)
+        init_protector();
 
-        INIT.call_once(|| {
-            // println!("[DEBUG] Protector: Initializing global detection vector...");
+        use std::sync::Once;
+        static INSTANCE_INIT: Once = Once::new();
+        
+        // Instance-specific initialization
+        INSTANCE_INIT.call_once(|| {
+            // Initialize Anti-Debug Globals which might need seed/warming
             anti_debug::init_global_detection_vector(seed);
-            
-            // println!("[DEBUG] Protector: Initializing VEH protection...");
             anti_debug::initialize_veh_protection();
-            
-            // println!("[DEBUG] Protector: Initializing anti-dump...");
-            crate::protector::anti_dump::init_anti_dump();
-            
-            // println!("[DEBUG] Protector: Initialization complete");
         });
 
         Protector {
@@ -719,27 +729,19 @@ impl Corruptible for f64 {
     }
 }
 
-
-
-
-
-
 // ============================================================================
 // MANDATORY MACRO - The Only Way to Instantiate
 // ============================================================================
 
 /// Macro to safely construct the Protector.
-/// Enforces Anti-Dump initialization before returning the instance.
+/// Enforces consolidated initialization (VEH, Traps) before returning the instance.
 #[macro_export]
 macro_rules! setup_anti_debug {
     ($seed:expr) => {{
-        // 1. Force Anti-Dump Initialization
+        // 1. Force strict initialization flow
         #[cfg(target_os = "windows")]
         {
-            let status = $crate::protector::init_anti_dump();
-            // We don't panic on false, because init_anti_dump returns true if already init.
-            // But we keep the return value for internal logic if needed.
-            std::hint::black_box(status);
+            $crate::protector::init_protector();
         }
 
         // 2. Create Protector

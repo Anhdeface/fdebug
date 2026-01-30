@@ -305,3 +305,45 @@ New hardening phase ensuring Anti-Dump protection is strictly enforced and unbyp
     - If a dump attempt is detected, `DIAGNOSTIC_MODE` is atomic-swapped to `false`.
     - Attacker is instantly blinded (no logs) during the attack analysis.
 
+
+---
+
+## Latest Update: TinyVM Refactoring & Anti-Dump Hardening
+
+### Summary of Code Changes
+
+The core Obfuscation (Layer 3) and Integrity (Layer 4) protection logic has been significantly upgraded to defeat modern dynamic analysis and dumping tools.
+
+### What Changed:
+
+#### 1. TinyVM Architecture Overhaul (Randomized V-Table)
+- **Problem**: Previous VM used a large `match` statement for opcode dispatch, which compilers optimize into a jump table or binary search tree. Static analysis tools (IDA/Ghidra) could easily reconstruct the Control Flow Graph (CFG).
+- **Solution**: Implemented **Indirect Threading** with a **Randomized V-Table**.
+    - **LTP Mapping**: A Logic-to-Physical (LTP) map translates logical opcodes to physical handler addresses.
+    - **Runtime Shuffling**: The V-Table is shuffled at runtime using a seeded PRNG (`Xorshift32`).
+    - **Fail-Deadly**: If a suspicious seed (e.g., 0) is detected, the LTP map is initialized with chaotic entropy (RDTSC + ASLR), causing the VM to execute wrong handlers silently instead of crashing.
+
+#### 2. Advanced Rolling Key Decryption
+- **Problem**: Simple XOR encryption is vulnerable to known-plaintext attacks.
+- **Solution**: Implemented **Multi-Stage State Mixing**.
+    - **Non-Linear Feedback**: `key = (key + raw).wrapping_mul(0x1F) ^ rot(key, 3) ^ global_entropy`.
+    - **Position Dependent**: Decoding now depends on the instruction pointer (`VIP`), preventing frequency analysis of identical instructions.
+    - **Macro Sync**: The `dynamic_str!` macro was updated to perform the exact inverse mathematical transform at compile time.
+
+#### 3. Anti-Dump Hardening (Selective PE Erasure)
+- **Problem**: Complete PE header erasure caused crashes with legitimate Windows APIs (e.g., `GetModuleHandle`, CRT initialization).
+- **Solution**: **Surgical/Selective Erasure**.
+    - **Preserved**: DOS Header (`MZ` signature) to maintain verifiable module state.
+    - **Corrupted**: NT Signature, `AddressOfEntryPoint`, `SizeOfImage`, and `SectionHeaders` (Name/VirtualSize).
+    - **Entropy**: Fields are overwritten with high-entropy random data (from `KUSER_SHARED_DATA`) instead of zeros, confusing pattern-matching dumpers.
+
+### Documentation Updates Needed
+
+#### 1. architecture_guide_NEW.md
+- **Section 2.2**: Update to reflect "Randomized V-Table" and "Indirect Threading".
+- **Section 2.5**: Replace `match` statement example with "Trampoline" loop using indirect function pointers.
+- **Section 5**: Mention the "Chaos Trap" connection between Seed Orchestrator and VM V-Table.
+
+#### 2. README.md
+- Update "Layer 3" description to mention "Randomized V-Table".
+- Add note about "Fail-Deadly" VM behavior.

@@ -1,4 +1,5 @@
 //! Global state management for the anti-debug system with SipHash-based encryption
+//! 128-shard architecture with 50% Active/Decoy distribution for enhanced obfuscation
 // github.com/anhdeface
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -87,7 +88,10 @@ pub struct CONTEXT {
     // ... other fields if needed, but these are enough for our use case
 }
 
-// Global atomic threat score and decay tracking
+// ============================================================================
+// 128-SHARD ARCHITECTURE WITH ACTIVE/DECOY DISTRIBUTION
+// ============================================================================
+
 // Const function to generate pseudo-random masks from runtime seed
 const fn mix_seed(seed: u32, i: u32) -> u32 {
     let mut x = seed.wrapping_add(i).wrapping_mul(0x9E3779B9);
@@ -99,9 +103,42 @@ const fn mix_seed(seed: u32, i: u32) -> u32 {
     x
 }
 
-// SHARD_MASKS - Now runtime-initialized from reconstructed seed
-// Cache for the shard masks
-static SHARD_MASKS_CACHE: OnceLock<[u32; 16]> = OnceLock::new();
+/// Mix seed to generate a 64-bit pair map for Active/Decoy determination
+/// Each bit determines which element in a pair (2*i, 2*i+1) is Active
+#[inline(always)]
+fn mix_seed_to_u64(seed: u32) -> u64 {
+    // Create a 64-bit value from the seed using multiple mixing rounds
+    let mut x = seed as u64;
+    x = x.wrapping_mul(0x9E3779B97F4A7C15);
+    x = x ^ (x >> 30);
+    x = x.wrapping_mul(0xBF58476D1CE4E5B9);
+    x = x ^ (x >> 27);
+    x = x.wrapping_mul(0x94D049BB133111EB);
+    x = x ^ (x >> 31);
+    x
+}
+
+/// Determine if a shard index is Active (holds real data) or Decoy (noise)
+/// Uses the pair-based algorithm: 128 shards = 64 pairs
+/// For pair i (0..64), if bit i of pair_map is 0 -> index 2*i is Active
+///                      if bit i of pair_map is 1 -> index 2*i+1 is Active
+#[inline(always)]
+fn is_active_shard(index: usize, pair_map: u64) -> bool {
+    if index >= 128 {
+        return false;
+    }
+    let pair_index = index / 2; // Which pair does this index belong to (0..64)
+    let is_second_in_pair = (index % 2) == 1; // Is this the second element (2*i+1)?
+    let bit_value = ((pair_map >> pair_index) & 1) == 1; // Get bit for this pair
+    
+    // If bit is 0: 2*i is Active (first element), 2*i+1 is Decoy
+    // If bit is 1: 2*i+1 is Active (second element), 2*i is Decoy
+    // Active if: (is_second && bit==1) || (!is_second && bit==0)
+    is_second_in_pair == bit_value
+}
+
+// Cache for the 128 shard masks
+static SHARD_MASKS_CACHE: OnceLock<[u32; 128]> = OnceLock::new();
 
 /// Get shard mask for a specific index
 /// Lazily initializes the masks on first access using the reconstructed seed
@@ -110,20 +147,48 @@ pub fn get_shard_mask(index: usize) -> u32 {
     let masks = SHARD_MASKS_CACHE.get_or_init(|| {
         // Get runtime-reconstructed seed
         let seed = crate::protector::seed_orchestrator::get_dynamic_seed();
-        [
-            mix_seed(seed, 0), mix_seed(seed, 1), mix_seed(seed, 2), mix_seed(seed, 3),
-            mix_seed(seed, 4), mix_seed(seed, 5), mix_seed(seed, 6), mix_seed(seed, 7),
-            mix_seed(seed, 8), mix_seed(seed, 9), mix_seed(seed, 10), mix_seed(seed, 11),
-            mix_seed(seed, 12), mix_seed(seed, 13), mix_seed(seed, 14), mix_seed(seed, 15),
-        ]
+        let mut arr = [0u32; 128];
+        for i in 0..128 {
+            arr[i] = mix_seed(seed, i as u32);
+        }
+        arr
     });
     masks[index]
 }
 
-// Distributed suspicion state
+// Distributed suspicion state - 128 shards (64 Active + 64 Decoy)
 // Initialized at runtime to SHARD_MASKS values to represent 0 score (Mask ^ Mask = 0)
 // If memory is zeroed (frozen), Val ^ Mask = Mask -> Huge Score -> Alarm
-pub static SUSPICION_SHARDS: [AtomicU32; 16] = [
+pub static SUSPICION_SHARDS: [AtomicU32; 128] = [
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    // 64 more for decoy/active pairs
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
     AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
     AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
     AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
@@ -181,7 +246,6 @@ fn siphash(v0: &mut u64, v1: &mut u64, v2: &mut u64, v3: &mut u64) {
 
 /// Calculate integrity hash using SipHash to detect mid-execution tampering
 pub fn recalculate_global_integrity() {
-    // Create a combined value from global state
     // Create a combined value from global state
     // Use reconstructed score instead of direct load
     let combined = (reconstruct_threat_score() as u64)
@@ -401,8 +465,9 @@ fn get_rdtsc_entropy() -> u64 {
     ((high as u64) << 32) | (low as u64)
 }
 
-/// Generate 3 distinct random indices [0..16) using mixed entropy (RDTSC + Stack Pointer)
-fn get_random_indices_3() -> (usize, usize, usize) {
+/// Generate 3 distinct random ACTIVE shard indices using mixed entropy
+/// Only selects from the 64 Active shards based on pair_map
+fn get_random_active_indices_3(pair_map: u64) -> (usize, usize, usize) {
     let mut entropy = get_rdtsc_entropy();
     
     // Mix entropy with stack address to prevent simple rdtsc manipulation
@@ -411,28 +476,70 @@ fn get_random_indices_3() -> (usize, usize, usize) {
     
     // Simple LCG-like mixer
     let mut rng = entropy;
-    let mut next = || {
-        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        ((rng >> 32) & 0xF) as usize
+    let mut next_active = || {
+        loop {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let idx = ((rng >> 32) & 0x7F) as usize; // 0..127
+            if is_active_shard(idx, pair_map) {
+                return idx;
+            }
+        }
     };
 
-    let idx1 = next();
+    let idx1 = next_active();
     
-    let mut idx2 = next();
+    let mut idx2 = next_active();
     while idx2 == idx1 {
-        idx2 = next();
+        idx2 = next_active();
     }
     
-    let mut idx3 = next();
+    let mut idx3 = next_active();
     while idx3 == idx1 || idx3 == idx2 {
-        idx3 = next();
+        idx3 = next_active();
+    }
+    
+    (idx1, idx2, idx3)
+}
+
+/// Generate 3 distinct random DECOY shard indices using mixed entropy
+/// Only selects from the 64 Decoy shards based on pair_map
+fn get_random_decoy_indices_3(pair_map: u64) -> (usize, usize, usize) {
+    let mut entropy = get_rdtsc_entropy();
+    
+    // Mix entropy with stack address
+    let stack_var = 0;
+    entropy ^= &stack_var as *const i32 as u64;
+    
+    // Use different multiplier for decoy selection
+    let mut rng = entropy.wrapping_mul(0xDEADBEEFCAFEBABE);
+    let mut next_decoy = || {
+        loop {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let idx = ((rng >> 32) & 0x7F) as usize; // 0..127
+            if !is_active_shard(idx, pair_map) {
+                return idx;
+            }
+        }
+    };
+
+    let idx1 = next_decoy();
+    
+    let mut idx2 = next_decoy();
+    while idx2 == idx1 {
+        idx2 = next_decoy();
+    }
+    
+    let mut idx3 = next_decoy();
+    while idx3 == idx1 || idx3 == idx2 {
+        idx3 = next_decoy();
     }
     
     (idx1, idx2, idx3)
 }
 
 /// Add suspicion with dispersed scoring mechanism (Scattering Algorithm)
-/// Spreads the score across 3 random shards to defeat data breakpoints.
+/// Spreads the score across 3 random ACTIVE shards to defeat data breakpoints.
+/// Also writes noise to 3 DECOY shards to mislead reverse engineers.
 /// Logic: Part_a + Part_b + Part_c = severity.score()
 pub fn add_suspicion(severity: DetectionSeverity) {
     let mut amount = severity.score();
@@ -446,9 +553,13 @@ pub fn add_suspicion(severity: DetectionSeverity) {
 
     apply_decay();
 
+    // Get the pair map for Active/Decoy determination
+    let seed = crate::protector::seed_orchestrator::get_dynamic_seed();
+    let pair_map = mix_seed_to_u64(seed);
+
     // Entropy source for splitting
     let entropy = get_rdtsc_entropy();
-    let (i1, i2, i3) = get_random_indices_3();
+    let (i1, i2, i3) = get_random_active_indices_3(pair_map);
 
     // Split amount into 3 random parts ensuring a + b + c = amount
     // Using random weights from entropy bits
@@ -461,10 +572,24 @@ pub fn add_suspicion(severity: DetectionSeverity) {
     let p2 = (amount * w2 as u32) / total_w as u32;
     let p3 = amount - p1 - p2; // Remainder to ensure total matches exactly
 
-    // Distribute to shards
+    // Distribute to ACTIVE shards (Real Logic)
     if p1 > 0 { add_to_shard(i1, p1); }
     if p2 > 0 { add_to_shard(i2, p2); }
     if p3 > 0 { add_to_shard(i3, p3); }
+
+    // === DECOY LOGIC: Write noise to DECOY shards to mislead reverse engineers ===
+    let (d1, d2, d3) = get_random_decoy_indices_3(pair_map);
+    
+    // Generate mathematically valid noise using entropy
+    let noise_entropy = get_rdtsc_entropy();
+    let noise1 = ((noise_entropy & 0xFF) as u32).wrapping_mul(0x9E3779B9);
+    let noise2 = (((noise_entropy >> 8) & 0xFF) as u32).wrapping_mul(0x85EBCA6B);
+    let noise3 = (((noise_entropy >> 16) & 0xFF) as u32).wrapping_mul(0xC2B2AE35);
+    
+    // Write noise to decoy shards (looks like real encoded data)
+    write_decoy_noise(d1, noise1);
+    write_decoy_noise(d2, noise2);
+    write_decoy_noise(d3, noise3);
 
     recalculate_global_integrity();
 }
@@ -476,7 +601,7 @@ pub fn add_suspicion_at(severity: DetectionSeverity, checkpoint_id: u8) {
     add_suspicion(severity);
 }
 
-/// Helper to add score to specific shard safely
+/// Helper to add score to specific shard safely (for Active shards)
 fn add_to_shard(idx: usize, amount: u32) {
     let mask = get_shard_mask(idx);
     let mut current_encoded = SUSPICION_SHARDS[idx].load(Ordering::SeqCst);
@@ -498,19 +623,37 @@ fn add_to_shard(idx: usize, amount: u32) {
     }
 }
 
+/// Write noise to a Decoy shard (camouflage operation)
+/// Uses same encoding scheme as real shards to look authentic
+fn write_decoy_noise(idx: usize, noise: u32) {
+    let mask = get_shard_mask(idx);
+    let mut current_encoded = SUSPICION_SHARDS[idx].load(Ordering::SeqCst);
+    
+    loop {
+        // Apply same encoding transformation as real shards for authenticity
+        let noise_encoded = noise.rotate_left(idx as u32 % 32) ^ mask;
+        
+        // XOR with current to create temporal variation
+        let new_encoded = current_encoded ^ (noise_encoded & 0xFF); // Limit change magnitude
+        
+        match SUSPICION_SHARDS[idx].compare_exchange(
+            current_encoded, new_encoded, Ordering::SeqCst, Ordering::SeqCst
+        ) {
+            Ok(_) => break,
+            Err(actual) => current_encoded = actual,
+        }
+    }
+}
+
 /// Encapsulated decay logic to be called by add_suspicion and get_suspicion_score
+/// Decays BOTH Active shards (real logic) and Decoy shards (camouflage)
 fn apply_decay() {
     let current_time = get_current_timestamp();
     // Optimistic check to avoid expensive atomic swap if not needed
     let last_time_val = GLOBAL_LAST_DECAY_TIME.load(Ordering::Relaxed);
     if current_time <= last_time_val { return; }
 
-    // Try to claim the decay update right
-    // Using swap is heavy, maybe just CAS?
-    // Let's stick to current logic pattern but clean it up
-    
-    // We only update if enough time has passed for at least 1 decay interval (e.g. 10s? Code said 300s previously)
-    // Code said 300s.
+    // We only update if enough time has passed for at least 1 decay interval (300s)
     if current_time - last_time_val < 300 { return; }
 
     // CAS to update time. Only one thread succeeds.
@@ -524,24 +667,22 @@ fn apply_decay() {
 
     if total_decay == 0 { return; }
 
-    // Decay mechanism: Must pick RANDOM shards to decrement.
-    // Unlike previous logic which iterated 0..16, we want to randomly peck at shards until we satisfy the decay amount.
-    // However, iterating 0..16 is actually fine for *finding* mass to decay, but it's predictable.
-    // "The Decay Mechanism: Hàm giảm điểm (Decay) cũng phải chọn mảnh ngẫu nhiên để trừ điểm"
-    
+    // Get pair map for Active/Decoy determination
+    let seed = crate::protector::seed_orchestrator::get_dynamic_seed();
+    let pair_map = mix_seed_to_u64(seed);
+
+    // Decay ACTIVE shards (Real Business Logic)
     let mut remaining = total_decay;
+    let start_idx = (get_rdtsc_entropy() % 128) as usize;
     
-    // Attempt to decay by randomly probing shards up to N attempts.
-    // If we can't find score after N attempts, we stop to avoid infinite loops if score is 0.
-    // Or we can iterate starting from a random index.
-    
-    let start_idx = (get_rdtsc_entropy() % 16) as usize;
-    
-    for i in 0..16 {
+    for i in 0..128 {
         if remaining == 0 { break; }
         
         // Wrap around index
-        let idx = (start_idx + i) % 16;
+        let idx = (start_idx + i) % 128;
+        
+        // Only decay Active shards for real logic
+        if !is_active_shard(idx, pair_map) { continue; }
         
         let mask = get_shard_mask(idx);
         let mut current_encoded = SUSPICION_SHARDS[idx].load(Ordering::SeqCst);
@@ -565,14 +706,55 @@ fn apply_decay() {
             }
         }
     }
+
+    // Decay DECOY shards (Camouflage - perform similar operations to maintain illusion)
+    let decoy_entropy = get_rdtsc_entropy();
+    let decoy_start = (decoy_entropy % 128) as usize;
+    
+    for i in 0..128 {
+        let idx = (decoy_start + i) % 128;
+        
+        // Only process Decoy shards
+        if is_active_shard(idx, pair_map) { continue; }
+        
+        let mask = get_shard_mask(idx);
+        let mut current_encoded = SUSPICION_SHARDS[idx].load(Ordering::SeqCst);
+        
+        // Perform atomic subtraction operation (mimics real decay pattern)
+        loop {
+            let current_val = (current_encoded ^ mask).rotate_right(idx as u32 % 32);
+            
+            // Apply pseudo-decay: subtract a small random amount
+            let pseudo_decay = ((decoy_entropy >> (i % 8)) & 0x7) as u32; // 0-7
+            let new_val = current_val.saturating_sub(pseudo_decay);
+            let new_encoded = new_val.rotate_left(idx as u32 % 32) ^ mask;
+            
+            match SUSPICION_SHARDS[idx].compare_exchange(
+                current_encoded, new_encoded, Ordering::SeqCst, Ordering::SeqCst
+            ) {
+                Ok(_) => break,
+                Err(actual) => current_encoded = actual,
+            }
+        }
+    }
 }
 
-/// Reconstruct the total threat score from distributed shards
+/// Reconstruct the total threat score from distributed ACTIVE shards
+/// CRITICAL: Only sums values from Active shards. Decoy shards are completely ignored.
 /// Logic: Value_i = (Shard_i ^ Mask_i).rotate_right(i % 32)
 /// Self-Defense: If memory is zeroed, XOR + Rotate results in a massive pseudo-random score.
 pub fn reconstruct_threat_score() -> u32 {
+    // Pre-calculate pair map once for O(1) per-shard Active check
+    let seed = crate::protector::seed_orchestrator::get_dynamic_seed();
+    let pair_map = mix_seed_to_u64(seed);
+    
     let mut total_score: u32 = 0;
-    for i in 0..16 {
+    for i in 0..128 {
+        // CRITICAL: Only sum Active shards, ignore Decoy shards
+        if !is_active_shard(i, pair_map) {
+            continue;
+        }
+        
         let encoded = SUSPICION_SHARDS[i].load(Ordering::SeqCst);
         let mask = get_shard_mask(i);
         
@@ -637,15 +819,15 @@ pub fn get_current_vm_key() -> u8 {
 // is_globally_debugged removed to prevent simple JMP patching.
 // Use get_combined_score() or get_suspicion_score() for logic coupling.
 
-/// Initialize VEH protection (distributed state)
+/// Initialize VEH protection (distributed state with 128 shards)
+/// Initializes all 128 shards (64 Active + 64 Decoy) with their respective masks
 pub fn initialize_veh_protection() {
-    // Register the actual exception handler
-    crate::protector::anti_debug::register_veh_handler();
+    // Register the actual exception handler -> HANDLED BY MASTER VEH (enhanced_veh.rs)
+    // crate::protector::anti_debug::register_veh_handler();
 
-    // Initialize the global state with default values
-    // Initialize the global state with default values
-    // Initialize shards to their masked zero values
-    for i in 0..16 {
+    // Initialize all 128 shards to their masked zero values
+    // Both Active and Decoy shards are initialized identically to prevent detection
+    for i in 0..128 {
         SUSPICION_SHARDS[i].store(get_shard_mask(i), Ordering::SeqCst);
     }
     GLOBAL_LAST_DECAY_TIME.store(get_current_timestamp(), Ordering::SeqCst);
@@ -748,7 +930,3 @@ pub fn poison_encryption_on_dump_attempt() {
     // Add critical suspicion
     add_suspicion(DetectionSeverity::Critical);
 }
-
-
-
-

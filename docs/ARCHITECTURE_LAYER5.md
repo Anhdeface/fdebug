@@ -1,8 +1,8 @@
 ---
 
-## Architecture Layer 5: Seed Orchestrator & Entropy Reconstruction
+## Architecture Layer 1: Seed Orchestrator & Entropy Reconstruction (Foundation)
 
-Beyond the four primary protection layers, fdebug adds a **foundational fifth layer** that generates all cryptographic material dynamically at runtime through **entropy reconstruction**.
+Beyond the four primary protection layers, fdebug adds a **foundational entropy layer** that generates all cryptographic material dynamically at runtime through **entropy reconstruction**.
 
 ### 5.1 The Problem with Static Seeds
 

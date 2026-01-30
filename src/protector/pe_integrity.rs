@@ -362,6 +362,12 @@ pub fn force_cache_pe_metadata() -> bool {
     TEXT_SECTION_DATA.get().is_some()
 }
 
+/// Retrieve the cached .text section bounds (RVA, Size)
+/// Returns None if the cache hasn't been populated yet
+pub fn get_text_section_bounds() -> Option<(u32, u32)> {
+    TEXT_SECTION_DATA.get().copied()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

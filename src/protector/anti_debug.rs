@@ -2215,84 +2215,41 @@ unsafe extern "system" fn tls_callback_entry(_image: *mut u8, reason: u32, _rese
 // VECTORED EXCEPTION HANDLING (VEH) - BREAKPOINT DETECTION
 // ============================================================================
 
-/// Register the Vectored Exception Handler to catch breakpoints
-pub fn register_veh_handler() {
-    unsafe {
-        // Add handler at the start of the list (1) to pre-empt standard handlers
-        AddVectoredExceptionHandler(1, Some(veh_handler));
-    }
-}
+/// Public handler called by Master VEH (enhanced_veh.rs)
+/// Handles INT3 and Single Step exceptions.
+/// Returns true if a debugger artifact was detected.
+pub unsafe fn handle_debug_exception(exception_info: *mut EXCEPTION_POINTERS) -> bool {
+    let record = (*exception_info).ExceptionRecord;
+    let context = (*exception_info).ContextRecord;
+    let code = (*record).ExceptionCode;
 
-/// Actual VEH Callback
-extern "system" fn veh_handler(exception_info: *mut EXCEPTION_POINTERS) -> i32 {
-    let record = unsafe { (*exception_info).ExceptionRecord };
-    let context = unsafe { (*exception_info).ContextRecord };
+    // Note: Warm-up and Module Filtering are handled by the Master VEH (enhanced_veh.rs)
 
-    let code = unsafe { (*record).ExceptionCode };
-    let address = unsafe { (*record).ExceptionAddress as usize };
-
-    // 1. Warm-up verification
-    if get_load_time().elapsed().as_secs() < 2 {
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-
-    // 2. Filter Breakpoints by Module Ownership
-    // We only care about breakpoints triggered within OUR executable memory
-    unsafe {
-        use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-        use windows::Win32::System::ProcessStatus::{GetModuleInformation, MODULEINFO};
-        use windows::Win32::System::Threading::GetCurrentProcess;
-
-        let h_module = GetModuleHandleW(None).unwrap_or_default();
-        let mut mod_info = MODULEINFO::default();
-
-        if GetModuleInformation(GetCurrentProcess(), h_module, &mut mod_info, std::mem::size_of::<MODULEINFO>() as u32).is_ok() {
-            let base = mod_info.lpBaseOfDll as usize;
-            let end = base + mod_info.SizeOfImage as usize;
-
-            // If address is outside our module, ignore (likely system/loader artifact)
-            if address < base || address >= end {
-                return EXCEPTION_CONTINUE_SEARCH;
-            }
-        }
-    }
-
-    // 3. Handle Guard Page Violation (Anti-Dump Protection)
-    const STATUS_GUARD_PAGE_VIOLATION: u32 = 0x80000001;
-    if code == STATUS_GUARD_PAGE_VIOLATION {
-        // Call the anti-dump handler for guard page violations
-        crate::protector::anti_dump::handle_guard_page_violation();
-        // Continue execution (Silent Defense - don't exit)
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-
-    // 4. Detect Software Breakpoint (INT3)
+    // Detect Software Breakpoint (INT3)
     if code == EXCEPTION_BREAKPOINT {
         add_suspicion(DetectionSeverity::High);
         GLOBAL_ENCRYPTION_KEY.fetch_xor(0x55, Ordering::SeqCst);
-        return EXCEPTION_CONTINUE_SEARCH;
+        return true;
     }
 
-    // 5. Detect Hardware Breakpoints (DR0 - DR3)
+    // Detect Hardware Breakpoints (DR0 - DR3) -> EXCEPTION_SINGLE_STEP
     if code == EXCEPTION_SINGLE_STEP {
-        let dr_active = unsafe {
-            (*context).Dr0 != 0 || (*context).Dr1 != 0 ||
-            (*context).Dr2 != 0 || (*context).Dr3 != 0
-        };
+        let dr_active = (*context).Dr0 != 0 || (*context).Dr1 != 0 ||
+                        (*context).Dr2 != 0 || (*context).Dr3 != 0;
 
         if dr_active {
             POISON_SEED.store(0xDEADC0DEBADC0DE, Ordering::SeqCst);
             add_suspicion(DetectionSeverity::Critical);
 
-            unsafe {
-                (*context).Dr0 = 0;
-                (*context).Dr1 = 0;
-                (*context).Dr2 = 0;
-                (*context).Dr3 = 0;
-                (*context).Dr7 &= !0xFF;
-            }
+            // Clear DRx registers to detach
+            (*context).Dr0 = 0;
+            (*context).Dr1 = 0;
+            (*context).Dr2 = 0;
+            (*context).Dr3 = 0;
+            (*context).Dr7 &= !0xFF;
+            return true;
         }
     }
 
-    EXCEPTION_CONTINUE_SEARCH
+    false
 }

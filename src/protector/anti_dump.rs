@@ -79,6 +79,20 @@ struct IMAGE_OPTIONAL_HEADER64 {
     AddressOfEntryPoint: u32,
     BaseOfCode: u32,
     ImageBase: u64,
+    SectionAlignment: u32,
+    FileAlignment: u32,
+    MajorOperatingSystemVersion: u16,
+    MinorOperatingSystemVersion: u16,
+    MajorImageVersion: u16,
+    MinorImageVersion: u16,
+    MajorSubsystemVersion: u16,
+    MinorSubsystemVersion: u16,
+    Win32VersionValue: u32,
+    SizeOfImage: u32,
+    SizeOfHeaders: u32,
+    CheckSum: u32,
+    Subsystem: u16,
+    DllCharacteristics: u16,
 }
 
 #[repr(C)]
@@ -262,13 +276,17 @@ unsafe fn erase_critical_headers(base: *mut u8) {
         // SAFETY: Volatile writes required because these are raw pointers to PE headers
         // WEAPONIZATION: Use random entropy instead of zeros to break pattern matching scanners.
         let entropy = get_kuser_shared_entropy();
-        ptr::write_volatile(&mut (*nt).OptionalHeader.AddressOfEntryPoint, (entropy & 0xFFFFFFFF) as u32);
-        ptr::write_volatile(&mut (*nt).OptionalHeader.ImageBase, (entropy >> 32) as u64);
         
-        // Also erase MZ signature to pass verify_anti_dump_success() check
-        // Note: verify_anti_dump_success checks for != 0x5A4D. Any garbage works.
-        // We use entropy to look like random data.
-        ptr::write_volatile(&mut (*dos).e_magic, (entropy as u16).wrapping_add(1));
+        // 1. Corrupt NT Signature (PE\0\0) -> Bricks strict PE parsers
+        // NOTE: We preserve DOS Header (e_magic) for basic system stability.
+        ptr::write_volatile(&mut (*nt).Signature, (entropy & 0xFFFFFFFF) as u32);
+
+        // 2. Corrupt AddressOfEntryPoint -> Bricks execution flow analysis
+        ptr::write_volatile(&mut (*nt).OptionalHeader.AddressOfEntryPoint, ((entropy >> 13) & 0xFFFFFFFF) as u32);
+        
+        // 3. Corrupt SizeOfImage -> Bricks memory dumping tools (incorrect size calc)
+        // Set to a random large value to confuse dumpers
+        ptr::write_volatile(&mut (*nt).OptionalHeader.SizeOfImage, ((entropy >> 7) & 0xFFFFFF) as u32);
         
         // Wipe Section Headers with entropy
         let file_hdr_size = std::mem::size_of::<IMAGE_FILE_HEADER>();
@@ -276,9 +294,11 @@ unsafe fn erase_critical_headers(base: *mut u8) {
         
         let section_hdr = (nt as usize + 4 + file_hdr_size + opt_hdr_size) as *mut u8;
         for i in 0..(*nt).FileHeader.NumberOfSections as usize {
-             // Overwrite 8 bytes of Name with random entropy
+             // Overwrite 8 bytes of Name + VirtualSize with random entropy
+             // This effectively destroys the section table mapping
              let section_entropy = get_kuser_shared_entropy().wrapping_add(i as u64);
              std::ptr::write_volatile(section_hdr.add(i * 40) as *mut u64, section_entropy);
+             std::ptr::write_volatile(section_hdr.add(i * 40 + 8) as *mut u32, (section_entropy >> 32) as u32);
         }
         
         protected_virtual_protect(nt as *mut _, 512, PAGE_READONLY, &mut old);
@@ -289,29 +309,11 @@ unsafe fn erase_critical_headers(base: *mut u8) {
 // COMPONENT 4: PRODUCTION VEH
 // ============================================================================
 
-extern "system" fn veh_handler(ptrs: *mut EXCEPTION_POINTERS) -> i32 {
-    unsafe {
-        // SAFETY: EXCEPTION_POINTERS is provided by OS during exception.
-        // Pointers are guaranteed valid in this context. 0x80000001 is STATUS_GUARD_PAGE_VIOLATION.
-        let record = (*ptrs).ExceptionRecord;
-        if (*record).ExceptionCode == STATUS_GUARD_PAGE_VIOLATION {
-            let fault_addr = (*record).ExceptionAddress as usize;
-            let decoys = DECOY_REGIONS.lock().unwrap();
-            
-            for &(base, size) in decoys.iter() {
-                if fault_addr >= base && fault_addr < base + size {
-                    // HONEYPOT HIT: Dumper or Scanner detected.
-                    crate::protector::global_state::add_suspicion(crate::protector::global_state::DetectionSeverity::Critical);
-                    crate::protector::global_state::poison_encryption_on_dump_attempt();
-                    
-                    // Do not exit, just let the scanner fail/hang
-                    return EXCEPTION_CONTINUE_EXECUTION;
-                }
-            }
-        }
-        EXCEPTION_CONTINUE_SEARCH
-    }
-}
+// ============================================================================
+// COMPONENT 4: PRODUCTION VEH (REMOVED - Handled by Master VEH)
+// ============================================================================
+
+// Legacy veh_handler removed.
 
 // ============================================================================
 // MAIN PRODUCTION INITIALIZATION
@@ -321,16 +323,11 @@ static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 pub fn init_anti_dump() -> bool {
     // Atomic check allows multiple calls but only one initialization
-    // Returns true if this call performed the initialization, false if already initialized
-    // However, for the "success check", we should return true if IT IS initialized (whether by us or before).
-    // The requirement says "return a bool status to indicate success".
     if INITIALIZED.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-        // Already initialized, which is a success state for the caller enforcing it.
         return true; 
     }
     
     unsafe {
-        // SAFETY: GetModuleHandleW(null) gets base of current process. Safe.
         let base = GetModuleHandleW(ptr::null());
         if base.is_null() { 
             return false; 
@@ -341,8 +338,7 @@ pub fn init_anti_dump() -> bool {
             crate::protector::global_state::add_suspicion(crate::protector::global_state::DetectionSeverity::Medium);
         }
         
-        // 2. Register Global Production VEH
-        AddVectoredExceptionHandler(1, Some(veh_handler));
+        // 2. Register Global Production VEH -> REMOVED (Handled by enhanced_veh::init_master_veh)
         
         // 3. Deploy Passive Honeytraps (Decoy Pages)
         spawn_decoy_traps();
@@ -352,6 +348,27 @@ pub fn init_anti_dump() -> bool {
     }
     
     true // Initialization successful
+}
+
+/// Public logic to check for guard page violations in decoy regions.
+/// Called by Master VEH (enhanced_veh.rs).
+/// Returns true if a Honeytrap was hit.
+pub unsafe fn handle_guard_page_violation(ptrs: *mut EXCEPTION_POINTERS) -> bool {
+    let record = (*ptrs).ExceptionRecord;
+    if (*record).ExceptionCode == STATUS_GUARD_PAGE_VIOLATION {
+        let fault_addr = (*record).ExceptionAddress as usize;
+        let decoys = DECOY_REGIONS.lock().unwrap();
+        
+        for &(base, size) in decoys.iter() {
+            if fault_addr >= base && fault_addr < base + size {
+                // HONEYPOT HIT: Dumper or Scanner detected.
+                // Strict logic: Only check and return detection status.
+                // Side effects (hang/loop) are handled by the caller (Master VEH) via exception continuation.
+                return true;
+            }
+        }
+    }
+    false
 }
 
 // Helper for random data without external crates
@@ -364,10 +381,4 @@ fn get_kuser_shared_entropy() -> u64 {
         let st = (0x7FFE0008 as *const u64).read_volatile();
         it ^ st
     }
-}
-
-/// Compatibility wrapper for anti_debug.rs
-pub fn handle_guard_page_violation() {
-    crate::protector::global_state::add_suspicion(crate::protector::global_state::DetectionSeverity::High);
-    crate::protector::global_state::poison_encryption_on_dump_attempt();
 }

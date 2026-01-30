@@ -61,7 +61,7 @@ fn check_kernel_debugger() -> bool {
 #[inline(never)]
 #[no_mangle]
 /// Fake process debugging check - another decoy that looks critical
-fn is_process_being_debugged() -> bool {
+pub fn is_process_being_debugged() -> bool {
     std::hint::black_box(());
 
     // Simple check that's easy to fool but looks important

@@ -334,27 +334,21 @@ This document provides an in-depth analysis of the **fdebug** module - a compreh
 
 The fdebug module employs a decentralized detection architecture that monitors the system from multiple angles simultaneously.
 
-### 1.1 Vectored Exception Handling (VEH) - First-Responder Detection
+### 1.1 Enhanced Vectored Exception Handling (VEH) - 5-Phase Logic
 
-Instead of relying on standard exception handlers (which can be easily hooked), fdebug registers a custom Vectored Exception Handler via the Windows API `AddVectoredExceptionHandler`. This handler intercepts:
+Instead of relying on simple exception handlers, fdebug implements a **5-Phase Exception Filtering System** that acts as the first line of defense:
 
-- **EXCEPTION_BREAKPOINT (INT3)** - Triggered when a debugger sets a software breakpoint
-- **EXCEPTION_SINGLE_STEP (0x80000004)** - Triggered when single-stepping is enabled
+1.  **Entry Filtering**: Checks if the exception occurred within the legitimate `.text` section boundaries (using PE Integrity metadata). Exceptions from external code or hooks are ignored.
+2.  **Stack Validation**: Performs a shallow stack walk (2 frames deep) using `RtlVirtualUnwind` to detect spoofed return addresses or artificial stack frames.
+3.  **Anti-Dump Dispatch**: Delegates `STATUS_GUARD_PAGE_VIOLATION` exceptions to the `anti_dump` module (see Section 1.4).
+4.  **Anti-Debug Dispatch**: Intercepts `EXCEPTION_BREAKPOINT` (INT3) and `EXCEPTION_SINGLE_STEP` (Hardware Breakpoints).
+5.  **Internal VM Heartbeat**: Uses **TinyVM** to verify debug registers (`Dr0`-`Dr3`) against an internal rolling checksum. If verification fails (e.g., external modification), the thread context is silently poisoned.
 
-When an unexpected breakpoint or single-step exception occurs, the system immediately calls `add_suspicion(DetectionSeverity::High)`.
-
-**Implementation Concept:**
-```rust
-// Within the VEH callback (anti_debug.rs)
-unsafe extern "system" fn veh_handler(ep: *mut EXCEPTION_POINTERS) -> i32 {
-    if (*(*ep).ExceptionRecord).ExceptionCode == EXCEPTION_BREAKPOINT {
-        // Unexpected breakpoint detected
-        add_suspicion(DetectionSeverity::High);
-        return EXCEPTION_CONTINUE_SEARCH; // Continue searching handlers
-    }
-    EXCEPTION_CONTINUE_SEARCH
-}
-```
+**Why 5 Phases?**
+This layered approach prevents bypasses via:
+-   **Hooking VEH**: The handler validates its own execution context.
+-   **Spoofing Context**: Stack validation catches artificial frames.
+-   **Patching Checks**: The VM Heartbeat is obfuscated and structurally coupled to the encryption key.
 
 ### 1.2 Hardware Breakpoint Detection (Debug Registers)
 
@@ -362,13 +356,11 @@ The system monitors CPU debug registers (Dr0-Dr7) through thread CONTEXT structu
 
 **Detection Mechanism:**
 ```rust
-// In anti_debug.rs: Hardware breakpoint detection logic
-// Reads CONTEXT.Dr0 through Dr7 to detect set breakpoints
-if context.Dr0 != 0 || context.Dr1 != 0 || context.Dr2 != 0 || context.Dr3 != 0 {
-    add_suspicion(DetectionSeverity::Critical);
-}
-if context.Dr6 & 0x0F != 0 { // Check if any breakpoint was triggered
-    add_suspicion(DetectionSeverity::High);
+// Verified via TinyVM Heartbeat logic (see Phase 5 of VEH)
+// Checks if Dr0-Dr3 match expected internal state, effectively preventing
+// external debuggers from using these registers without detection.
+if context.Dr7 != 0 && !validate_heartbeat(context) {
+    poison_state();
 }
 ```
 
@@ -379,26 +371,25 @@ The system uses the RDTSC (Read Time-Stamp Counter) instruction to measure execu
 **Calibration Process:**
 The system performs 2000 calibration iterations during initialization to establish a baseline latency threshold. On real hardware, this typically ranges from 100-200 CPU cycles. On virtual machines or under debugging, times spike to 2000+ cycles.
 
-```rust
-// Pseudo-code for timing-based detection
-let start = rdtsc();
-cpuid(0);  // Serialize instruction stream
-let end = rdtsc();
-let delta = end - start;
+### 1.4 Surgical Anti-Dump & Indirect Syscalls
 
-// Adaptive threshold accounts for different hardware
-if delta > CALIBRATED_THRESHOLD * 10 {
-    add_suspicion(DetectionSeverity::High);
-}
-```
+To prevent memory dumping tools (like Scylla, PD, PE-Sieve) from reconstructing the binary, fdebug implements a **Surgical Anti-Dump** strategy combined with **Indirect Syscalls**.
 
-**Why This Works:**
-- CPUID is a serializing instruction that flushes the CPU pipeline
-- On native hardware: ~100-200 cycles
-- On VM with debugging: 2000+ cycles (VM-Exit overhead)
-- When single-stepping: Each instruction takes thousands of extra cycles
+**A. Indirect Syscalls (Bypassing EDR/Hooks)**
+Instead of calling `VirtualProtect` directly (which is monitored by EDRs), fdebug resolves the System Service Number (SSN) for `NtProtectVirtualMemory` dynamically and executes a raw `syscall` instruction via a "trampoline" gadget found in `ntdll.dll`.
+-   **Benefit**: The call stack points to valid `ntdll` memory, bypassing user-mode hooks.
+-   **Stealth**: No `jmp` instructions or recognizable stub patterns in the main binary.
 
-### 1.4 PEB Memory Integrity Checks
+**B. Surgical PE Erasure**
+Rather than zeroing the entire PE header (which causes crashes in CRT/Windows APIs), fdebug selectively corrupts only critical fields using high-entropy random data:
+-   **Preserved**: `DOS Header` (`MZ`) - maintains basic module validity.
+-   **Corrupted**: `NT Signature`, `AddressOfEntryPoint`, `SizeOfImage`, `Section Headers`.
+-   **Entropy**: Fields are overwritten with `KUSER_SHARED_DATA` entropy (timestamp-based), making them look like random garbage rather than empty zeros.
+
+**C. Passive Decoy Traps**
+The `anti_dump` module allocates "Honey Pot" pages with `PAGE_GUARD` protection. Any attempt to scan or read these pages (linear sweep) triggers a `STATUS_GUARD_PAGE_VIOLATION` exception, which is caught by the VEH (Phase 3) and flags the process as under attack.
+
+### 1.5 PEB Memory Integrity Checks
 
 The Process Environment Block (PEB), located at `GS:[0x60]` on x86-64, contains critical process metadata including debug flags. fdebug periodically reads and validates:
 
@@ -424,7 +415,7 @@ if being_debugged != 0 {
 }
 ```
 
-### 1.5 Environment Detection
+### 1.6 Environment Detection
 
 The system also checks for virtualization and cloud environments:
 
@@ -445,244 +436,84 @@ fn detect_virtual_environment() -> bool {
 
 ---
 
-## Architecture Layer 2: Polymorphic Virtual Execution (TinyVM)
+## Architecture Layer 2: Randomized Virtual Execution (TinyVM 2.0)
 
-TinyVM is a lightweight custom virtual machine that executes anti-debug bytecode using **Control Flow Flattening** obfuscation.
+TinyVM is a lightweight custom virtual machine that executes anti-debug bytecode using **Indirect Threading** and **Randomized V-Table Dispatching**.
 
-### 2.1 What is Control Flow Flattening?
+### 2.1 Indirect Threading vs Control Flow Flattening
 
-Control Flow Flattening converts sequential code execution into a state machine. Instead of:
+Traditional "Control Flow Flattening" uses a massive `switch` statement inside a loop. This is effective against humans but vulnerable to compiler optimization and automated CFG reconstruction.
+
+**TinyVM 2.0 Approach:**
+Instead of a `switch`, the VM uses a **Trampoline Architecture** with a single indirect call:
+
 ```rust
-// Sequential code (easy to analyze)
-let a = get_value();
-let b = process(a);
-let result = finalize(b);
-return result;
-```
-
-The code becomes:
-```rust
-// Flattened (extremely hard to reverse-engineer)
+// The VM Loop (Trampoline)
 loop {
-    match state {
-        STATE_INIT => { state = STATE_GET_VALUE; }
-        STATE_GET_VALUE => { 
-            a = get_value(); 
-            state = STATE_PROCESS; 
-        }
-        STATE_PROCESS => { 
-            b = process(a); 
-            state = STATE_FINALIZE; 
-        }
-        STATE_FINALIZE => { 
-            result = finalize(b); 
-            state = STATE_EXIT; 
-        }
-        STATE_EXIT => { break; }
-        _ => { state = STATE_GARBAGE; } // Anti-analysis trap
-    }
+    // 1. Fetch encrypted opcode
+    // 2. Map Logical Opcode -> Physical Index (via LTP Map)
+    // 3. Indirect Call
+    let handler = VM_HANDLERS[phys_idx];
+    handler(ctx, code, &mut state);
 }
-return result;
 ```
 
-**Why This is Effective:**
-- IDA Pro's graph view becomes nearly unreadable
-- Ghidra's decompiler produces garbage
-- Manual analysis requires understanding the entire state machine
-- Control flow is obscured by fake branches and garbage states
+**Security Benefit:**
+- **Control Flow Graph (CFG) Collapse**: Static analysis tools see a single loop with one indirect call target. The destinations are unknown until runtime.
+- **No Switch-Case Pattern**: There are no `cmp/je` chains for decompilers to reconstruct.
 
-### 2.2 Polymorphic Opcodes
+### 2.2 Randomized V-Table (Fail-Deadly)
 
-The opcodes defined in `VmOp` enum are not static. They're generated at compile time using the `auto_op!()` macro:
+The mapping between Logical Opcodes (in bytecode) and Physical Handlers (in memory) is **dynamic**.
+
+1.  **LTP Map (Logic-to-Physical)**: A 256-byte table that permutes opcode indices.
+2.  **Runtime Shuffling**: On initialization, the LTP Map is shuffled using a PRNG seeded by the **Seed Orchestrator**.
+3.  **Fail-Deadly "Chaos Trap"**:
+    - If the system detects a safe environment, the map is consistent with the compiler's output.
+    - If a **suspicious seed** (e.g., 0 from a mocked environment) is detected, the map is initialized with **Chaotic Entropy** (RDTSC + ASLR mixing).
+    - **Result**: The VM "runs" but executes the wrong handlers (e.g., `ADD` becomes `XOR`), silently corrupting all internal logic without crashing.
+
+### 2.3 Advanced Rolling Key Decryption
+
+Instruction decoding is no longer stateless. It uses a **Multi-Stage State Mixing** algorithm:
+
+```rust
+// Cryptographic State Update
+state.key = state.key.wrapping_add(raw_byte).wrapping_mul(0x1F);
+state.key ^= state.key.rotate_right(3) ^ 0x3C;
+state.key ^= GLOBAL_VIRTUAL_MACHINE_KEY; // External Entropy
+```
+
+**Properties:**
+-   **Avalanche Effect**: Every byte read changes the key for all subsequent bytes.
+-   **Position Dependent**: Decoding logic includes the instruction pointer (`VIP`), so identical instructions have different ciphertext at different addresses.
+-   **No Frequency Analysis**: The same opcode `0xA0` will appear as completely different bytes throughout the bytecode stream.
+
+### 2.4 Polymorphic Opcodes
+
+The opcodes defined in `VmOp` are generated at compile time using the `auto_op!()` macro and synchronized with the runtime seed:
 
 ```rust
 pub enum VmOp {
     OP_LOAD_IMM = auto_op!(0x1A),           // Load immediate value onto stack
     OP_READ_GS_OFFSET = auto_op!(0x2B),    // Read from GS segment (PEB access)
-    OP_READ_MEM_U64 = auto_op!(0x2E),      // Read 8 bytes from memory
-    OP_RDTSC = auto_op!(0x3C),             // Execute RDTSC instruction
-    OP_CPUID = auto_op!(0x3D),             // Execute CPUID instruction
-    OP_ADD = auto_op!(0x4D),               // Add top two stack values
-    OP_XOR = auto_op!(0x6F),               // XOR top two stack values
-    OP_CMP_EQ = auto_op!(0xB4),            // Compare equality
-    OP_JZ = auto_op!(0xEE),                // Jump if zero
     // ... 30+ more opcodes
 }
 ```
 
-The `auto_op!()` macro generates unique values based on:
-- `DYNAMIC_SEED` (changes every build, generated at compile-time)
-- Build environment hash
-- Line number and source location
-- File path hash
+The `dynamic_str!` macro performs the **inverse mathematical transformation** at compile time to generate valid bytecode that matches the runtime's complex decoding logic.
 
-**Result:** Each binary has completely different opcode values, preventing signature-based detection.
-
-**Example Polymorphism:**
-```
-Build 1: OP_LOAD_IMM = 0xA3
-Build 2: OP_LOAD_IMM = 0x2F
-Build 3: OP_LOAD_IMM = 0x78
-
-IDA Pro signature for opcode 0xA3 won't work on the other builds!
-```
-
-### 2.3 Example: Reading PEB via TinyVM
-
-Instead of directly reading memory:
-```rust
-// Direct (vulnerable to breakpoints)
-let peb = unsafe { 
-    asm!("mov {peb}, gs:[0x60]", peb = out(reg) peb);
-    peb 
-};
-```
-
-fdebug uses TinyVM bytecode:
-```rust
-// Executed through virtualized bytecode (polymorph)
-let mut vm = TinyVm::new(security_key);
-
-// Bytecode: LOAD_IMM(0x60) -> READ_GS_OFFSET -> EXIT
-let bytecode = vec![
-    VmOp::OP_LOAD_IMM as u8, 0x60,
-    VmOp::OP_READ_GS_OFFSET as u8,
-    VmOp::OP_EXIT as u8,
-];
-
-vm_execute(&mut vm, &bytecode);
-let peb = vm.pop(); // Result from VM execution
-```
-
-**Security Benefit:**
-- Debugger breakpoints on `mov gs:[0x60]` instructions won't trigger (instruction doesn't exist in native code)
-- The bytecode is polymorphic and changes every build
-- Analyzing the bytecode requires understanding the complete VM state machine
-
-### 2.4 VM Architecture and State Machine
+### 2.5 VM Architecture
 
 ```rust
 pub struct TinyVm {
-    pub vip: usize,           // Virtual Instruction Pointer
-    pub v_stack: [u64; 32],   // Virtual Stack (fixed 32 u64 slots)
+    pub v_stack: [u64; 32],   // Virtual Stack
     pub sp: usize,            // Stack Pointer
-    pub accumulator: u64,     // Accumulator register
-    pub key: u64,             // Local key for this execution
-}
-
-// Stack-based operations
-fn push(&mut self, val: u64) {
-    if self.sp < 32 {
-        self.v_stack[self.sp] = val;
-        self.sp += 1;
-    }
-}
-
-fn pop(&mut self) -> u64 {
-    if self.sp > 0 {
-        self.sp -= 1;
-        self.v_stack[self.sp]
-    } else {
-        0
-    }
+    pub key: u64,             // Local key
 }
 ```
 
-The VM uses a stack-based architecture similar to JVM or .NET IL, which makes bytecode analysis more time-consuming.
-
-### 2.5 VM Execution with Control Flow Flattening
-
-```rust
-fn vm_execute(mut vm: TinyVm, code: &[u8]) -> u64 {
-    let mut state = STATE_FETCH;
-    let mut opcode = 0u8;
-    
-    loop {
-        match state {
-            s if opaque_predicate_eq(s, STATE_FETCH) => {
-                // Bounds check and fetch opcode
-                if vm.vip < code.len() {
-                    opcode = code[vm.vip];
-                    vm.vip += 1;
-                    state = STATE_DECODE;
-                } else {
-                    state = STATE_EXIT;
-                }
-            }
-            
-            s if opaque_predicate_eq(s, STATE_DECODE) => {
-                // Match opcode and set next state
-                if opcode == VmOp::OP_LOAD_IMM as u8 {
-                    state = STATE_EXEC_LOAD_IMM;
-                } else if opcode == VmOp::OP_RDTSC as u8 {
-                    state = STATE_EXEC_RDTSC;
-                } else if opcode == VmOp::OP_READ_GS_OFFSET as u8 {
-                    state = STATE_EXEC_READ_GS;
-                } else if opcode == VmOp::OP_EXIT as u8 {
-                    state = STATE_EXIT;
-                } else {
-                    state = STATE_GARBAGE; // Invalid opcode
-                }
-            }
-            
-            s if opaque_predicate_eq(s, STATE_EXEC_LOAD_IMM) => {
-                // Load immediate from next byte
-                if vm.vip < code.len() {
-                    let imm = code[vm.vip] as u64;
-                    vm.vip += 1;
-                    vm.push(imm);
-                    state = STATE_FETCH;
-                } else {
-                    state = STATE_EXIT;
-                }
-            }
-            
-            s if opaque_predicate_eq(s, STATE_EXEC_RDTSC) => {
-                // Execute RDTSC and push result
-                let tsc = unsafe {
-                    let low: u32;
-                    let high: u32;
-                    asm!("rdtsc", out("eax") low, out("edx") high);
-                    ((high as u64) << 32) | (low as u64)
-                };
-                vm.push(tsc);
-                state = STATE_FETCH;
-            }
-            
-            s if opaque_predicate_eq(s, STATE_EXEC_READ_GS) => {
-                // Pop offset from stack, read from GS segment
-                let offset = vm.pop() as u16;
-                let value = unsafe {
-                    let result: u64;
-                    asm!("mov {}, gs:[{:x}]", out(reg) result, in(reg) offset);
-                    result
-                };
-                vm.push(value);
-                state = STATE_FETCH;
-            }
-            
-            s if opaque_predicate_eq(s, STATE_EXIT) => {
-                break; // Exit the VM
-            }
-            
-            s if opaque_predicate_eq(s, STATE_GARBAGE) => {
-                // Dead end state for anti-analysis
-                // Complex computation without effect
-                let junk = vm.pop().wrapping_mul(0xDEADBEEFCAFEBABE);
-                vm.push(junk ^ vm.key);
-                state = STATE_FETCH; // Continue as if nothing happened
-            }
-            
-            _ => {
-                // Fallback for unknown states
-                state = STATE_EXIT;
-            }
-        }
-    }
-    
-    vm.pop()
-}
-```
+The stack-based architecture remains, but the execution engine is now entirely decentralized into standalone micro-handlers rather than a monolithic loop.
 
 ---
 
