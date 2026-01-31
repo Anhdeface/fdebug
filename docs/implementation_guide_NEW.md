@@ -72,7 +72,7 @@ fn get_crypto_material(protector: &Protector) -> CryptoMaterial {
 }
 
 fn main() {
-    let protector = Protector::new(0xDEADBEEF);
+    let protector = fdebug::setup_anti_debug!(fdebug::protector::get_dynamic_seed());
     let material = get_crypto_material(&protector);
     
     // If running under debugger:

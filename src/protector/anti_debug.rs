@@ -23,7 +23,7 @@ use crate::protector::global_state::*;
 
 static LOAD_TIME: OnceLock<Instant> = OnceLock::new();
 
-fn get_load_time() -> &'static Instant {
+pub(crate) fn get_load_time() -> &'static Instant {
     LOAD_TIME.get_or_init(Instant::now)
 }
 
@@ -982,179 +982,96 @@ pub fn checkpoint_exception_handling() -> bool {
 /// Checkpoint 4: Hypervisor detection using multi-layered approach
 #[inline(always)]
 pub fn checkpoint_hypervisor_detection() -> bool {
-    // Create bytecode for hypervisor detection using polymorphic TinyVM
-    // This bytecode will:
-    // Layer A: Use CPUID with leaf 0x40000000 to detect hypervisor brand strings
-    // Layer B: Use I/O port 0x5658 (VMware backdoor) if available
-    // Layer C: Use timing side-channel to measure VM-exit latency
+    // 1. Warm-up Period: Disable suspicion for first 5 seconds
+    if get_load_time().elapsed().as_secs() < 5 {
+        return false;
+    }
 
-    let encryption_key = compute_encryption_key();
-
-    // First, let's try CPUID-based detection using VM
     let mut detected = false;
+    let mut total_suspicion = 0u32;
 
-    // Check for hypervisor presence using CPUID leaf 1
-    // But be more conservative - some legitimate systems may have this bit set
+    // Layer A: Hypervisor bit in CPUID
     unsafe {
         let cpuid_result = cpuid_helper(1);
-
-        // Bit 31 of ECX indicates hypervisor presence
-        // Only add suspicion, don't immediately detect
         if (cpuid_result.2 & (1 << 31)) != 0 {
-            // Don't set detected=true immediately, just add to suspicion
-            add_suspicion_at(DetectionSeverity::Low, 1); // Reduced from Medium to Low(10) per task
+            total_suspicion += 10; // Low suspicion for hypervisor bit
         }
     }
 
-    // If hypervisor bit is set, perform deeper checks
-    // Only set detected=true if we find strong evidence
-    let mut deep_check_detected = false;
-    let mut brand_suspicion = 0u32;
-
-    // Check hypervisor brand string using CPUID leaves 0x40000000-0x40000002
+    // Layer B: Brand name check
     let mut brand_string = [0u8; 12];
-
     unsafe {
-        // CPUID leaf 0x40000000
         let (_, ebx, ecx, edx) = cpuid_helper(0x40000000);
-
-        // Store first 12 bytes of brand string
-        let ebx_bytes = ebx.to_le_bytes();
-        let ecx_bytes = ecx.to_le_bytes();
-        let edx_bytes = edx.to_le_bytes();
-
-        brand_string[0..4].copy_from_slice(&ebx_bytes);
-        brand_string[4..8].copy_from_slice(&ecx_bytes);
-        brand_string[8..12].copy_from_slice(&ecx_bytes);
+        brand_string[0..4].copy_from_slice(&ebx.to_le_bytes());
+        brand_string[4..8].copy_from_slice(&ecx.to_le_bytes());
+        brand_string[8..12].copy_from_slice(&edx.to_le_bytes());
     }
 
-    // Check for known hypervisor signatures using XOR-encoded strings
-    let brand_str = std::str::from_utf8(&brand_string).unwrap_or("");
-
-    // XOR-encoded hypervisor signatures (using precomputed constants to avoid macro ordering issues)
-    const VMWARE_ENCODED: [u8; 6] = [0x7C, 0x27, 0x1D, 0x04, 0x18, 0x0B]; // "VMware" XOR 0x5A
-    const VBOX_ENCODED: [u8; 4] = [0x3C, 0x11, 0x35, 0x30];     // "VBox" XOR 0x5A
-    const KVM_ENCODED: [u8; 9] = [0x21, 0x3C, 0x27, 0x21, 0x3C, 0x27, 0x21, 0x3C, 0x27]; // "KVMKVMKVM" XOR 0x5A
     const MS_HV_ENCODED: [u8; 12] = [0x17, 0x03, 0x09, 0x18, 0x05, 0x1D, 0x05, 0x0C, 0x1E, 0x7A, 0x10, 0x1C]; // "Microsoft Hv" XOR 0x5A
-    const XEN_ENCODED: [u8; 12] = [0x32, 0x3F, 0x34, 0x3C, 0x27, 0x27, 0x32, 0x3F, 0x34, 0x3C, 0x27, 0x27]; // "XenVMMXenVMM" XOR 0x5A
-    const PRL_ENCODED: [u8; 10] = [0x2A, 0x28, 0x36, 0x7A, 0x1E, 0x2F, 0x2A, 0x3F, 0x28, 0x2C]; // "prl hyperv" XOR 0x5A
-
-    // Check if brand string contains any of the XOR-encoded signatures
-    let brand_bytes = brand_str.as_bytes();
-    if contains_encoded_string(brand_bytes, &VMWARE_ENCODED, 0x5A) ||
-       contains_encoded_string(brand_bytes, &VBOX_ENCODED, 0x5A) ||
-       contains_encoded_string(brand_bytes, &KVM_ENCODED, 0x5A) ||
-       contains_encoded_string(brand_bytes, &MS_HV_ENCODED, 0x5A) ||
-       contains_encoded_string(brand_bytes, &XEN_ENCODED, 0x5A) ||
-       contains_encoded_string(brand_bytes, &PRL_ENCODED, 0x5A) {
-        brand_suspicion = 15; // Reduced from 30 to 15 per task
-        deep_check_detected = true;
+    let brand_bytes = &brand_string;
+    
+    if contains_encoded_string(brand_bytes, &MS_HV_ENCODED, 0x5A) {
+        // Hyper-V detected. We add Medium suspicion but NOT Critical.
+        total_suspicion += 30; 
+    } else {
+        // Check other brands (simplified)
+        const VMWARE_ENCODED: [u8; 6] = [0x7C, 0x27, 0x1D, 0x04, 0x18, 0x0B]; // "VMware" XOR 0x5A
+        if contains_encoded_string(brand_bytes, &VMWARE_ENCODED, 0x5A) {
+            total_suspicion += 40;
+        }
     }
 
-    // Perform timing-based detection - be more conservative to avoid cloud false positives
-    let timing_suspicion = {
-        let mut timing_anomalies = 0u32;
-        let mut total_checks = 0u32;
-
-        for _ in 0..5 { // Increase sample size to reduce false positives
-            total_checks += 1;
-
-            // Measure CPUID execution time
-            let (start_low, start_high): (u32, u32);
-            unsafe {
-                std::arch::asm!(
-                    "lfence",
-                    "rdtsc",
-                    "lfence",
-                    out("eax") start_low,
-                    out("edx") start_high,
-                    options(nomem, nostack)
-                );
-            }
-            let start = ((start_high as u64) << 32) | (start_low as u64);
-
-            // Execute CPUID (potential trap in hypervisor)
-            let _ = unsafe { cpuid_helper(1) };
-
-            let (end_low, end_high): (u32, u32);
-            unsafe {
-                std::arch::asm!(
-                    "lfence",
-                    "rdtsc",
-                    "lfence",
-                    out("eax") end_low,
-                    out("edx") end_high,
-                    options(nomem, nostack)
-                );
-            }
-            let end = ((end_high as u64) << 32) | (end_low as u64);
-
+    // Layer C: Timing analysis (CPUID vs Arithmetic)
+    let mut timing_anomalies = 0;
+    for _ in 0..5 {
+        unsafe {
+            let start = {
+                let (l, h): (u32, u32);
+                std::arch::asm!("lfence", "rdtsc", "lfence", out("eax") l, out("edx") h, options(nomem, nostack));
+                ((h as u64) << 32) | (l as u64)
+            };
+            let _ = cpuid_helper(1);
+            let end = {
+                let (l, h): (u32, u32);
+                std::arch::asm!("lfence", "rdtsc", "lfence", out("eax") l, out("edx") h, options(nomem, nostack));
+                ((h as u64) << 32) | (l as u64)
+            };
             let cpuid_time = end.saturating_sub(start);
 
-            // Measure simple arithmetic time for comparison
-            let (start_low2, start_high2): (u32, u32);
-            unsafe {
-                std::arch::asm!(
-                    "lfence",
-                    "rdtsc",
-                    "lfence",
-                    out("eax") start_low2,
-                    out("edx") start_high2,
-                    options(nomem, nostack)
-                );
-            }
-            let start2 = ((start_high2 as u64) << 32) | (start_low2 as u64);
-
-            // Simple arithmetic (no trap)
+            let start2 = {
+                let (l, h): (u32, u32);
+                std::arch::asm!("lfence", "rdtsc", "lfence", out("eax") l, out("edx") h, options(nomem, nostack));
+                ((h as u64) << 32) | (l as u64)
+            };
             let mut x = 0u64;
-            for i in 0..100 {
-                x = x.wrapping_add(i);
-            }
-
-            let (end_low2, end_high2): (u32, u32);
-            unsafe {
-                std::arch::asm!(
-                    "lfence",
-                    "rdtsc",
-                    "lfence",
-                    out("eax") end_low2,
-                    out("edx") end_high2,
-                    options(nomem, nostack)
-                );
-            }
-            let end2 = ((end_high2 as u64) << 32) | (end_low2 as u64);
-
+            for i in 0..100 { x = x.wrapping_add(i); }
+            let end2 = {
+                let (l, h): (u32, u32);
+                std::arch::asm!("lfence", "rdtsc", "lfence", out("eax") l, out("edx") h, options(nomem, nostack));
+                ((h as u64) << 32) | (l as u64)
+            };
             let arith_time = end2.saturating_sub(start2);
 
-            // Be more conservative with timing detection - increase threshold to avoid cloud false positives
-            if cpuid_time > arith_time.saturating_mul(10) { // Increased from 5 to 10
+            if cpuid_time > arith_time.wrapping_mul(20) {
                 timing_anomalies += 1;
             }
         }
+    }
 
-        // Only add suspicion if more than 60% of checks show anomalies
-        if timing_anomalies > (total_checks * 60 / 100) {
-            10 // Changed from 25 to 10 (Low per task instructions)
-        } else {
-            0
-        }
-    };
+    if timing_anomalies >= 3 {
+        total_suspicion += 20;
+    }
 
-    // Combine all suspicion sources
-    let total_suspicion = if deep_check_detected { 30 } else { 0 } + brand_suspicion + timing_suspicion; // Strong detection = Medium(30)
-
-    // Only trigger detection if suspicion score exceeds a high threshold
-    // This reduces false positives from legitimate cloud environments
-    detected = total_suspicion > 70; // Increased from 50 to 70
-
-    if detected {
+    // Cap total suspicion from hypervisor at High (60)
+    let finalized_suspicion = total_suspicion.min(60);
+    
+    if finalized_suspicion >= 60 {
         add_suspicion_at(DetectionSeverity::High, 1);
-    } else if total_suspicion > 0 {
-        if total_suspicion >= 30 {
-            add_suspicion_at(DetectionSeverity::Medium, 1);
-        } else {
-            add_suspicion_at(DetectionSeverity::Low, 1);
-        }
+        detected = true;
+    } else if finalized_suspicion >= 30 {
+        add_suspicion_at(DetectionSeverity::Medium, 1);
+    } else if finalized_suspicion >= 10 {
+        add_suspicion_at(DetectionSeverity::Low, 1);
     }
 
     detected

@@ -386,7 +386,13 @@ Rather than zeroing the entire PE header (which causes crashes in CRT/Windows AP
 -   **Corrupted**: `NT Signature`, `AddressOfEntryPoint`, `SizeOfImage`, `Section Headers`.
 -   **Entropy**: Fields are overwritten with `KUSER_SHARED_DATA` entropy (timestamp-based), making them look like random garbage rather than empty zeros.
 
-**C. Passive Decoy Traps**
+**C. Direct Syscall Watchdog v2 (Liveness Monitoring)**
+To catch thread suspension by a debugger, the `anti_dump` module implements a watchdog that monitors the internal **VM Heartbeat**.
+-   **Adaptive Sensitivity**: Uses a **5-second baseline threshold** (50M 100ns units). If the system is under heavy load (>85% CPU), the threshold doubles to **10 seconds** to eliminate false positives.
+-   **Silent Poisoning**: Unlike version 1.0 which exited the process, version 2.0 triggers **Silent Data Poisoning**. It corrupts `POISON_SEED` and cryptographic keys, ensuring all future execution produces garbage data without notifying the attacker.
+-   **Warm-up Period**: A 10-second stabilization window at startup prevents race conditions during module initialization.
+
+**D. Passive Decoy Traps**
 The `anti_dump` module allocates "Honey Pot" pages with `PAGE_GUARD` protection. Any attempt to scan or read these pages (linear sweep) triggers a `STATUS_GUARD_PAGE_VIOLATION` exception, which is caught by the VEH (Phase 3) and flags the process as under attack.
 
 ### 1.5 PEB Memory Integrity Checks
@@ -430,9 +436,21 @@ fn detect_virtual_environment() -> bool {
     vendor_string.contains("vmware") ||
     vendor_string.contains("virtualbox") ||
     vendor_string.contains("kvm") ||
-    vendor_string.contains("xen")
+    vendor_string.contains("xen") ||
+    vendor_string.contains("microsoft hv")
 }
 ```
+
+**Hyper-V Optimization:**
+In modern Windows environments (WSL2, Sandbox), Hyper-V is often active. To reduce false positives:
+-   **Baseline Suspicion**: Hyper-V/Virtualized state baseline is set to **60 points** (DetectionSeverity::High).
+-   **Consolidated Scoring**: Multiple indicators (Hypervisor bit + Brand string + Timing) are capped at 60 points to prevent accidental poisoning (which occurs at 100+).
+-   **Stability**: This allows the application to run safely on machine-local virtual environments while maintaining detection resistance.
+
+### 1.7 Extended Environmental Context
+The system further refines its detection through subtle environmental cues:
+- **Terminal Context Detection**: Checks if the process is running within a standard terminal shell (`powershell.exe`, `cmd.exe`). Debugging tools often launch processes in non-standard or redirected pipes, which the system flags.
+- **Precision Calibration**: Performs 2000 hardware timing cycles at startup to distinguish between "Real Hardware Jitter" and "Debugger Interruption".
 
 ---
 
@@ -515,6 +533,11 @@ pub struct TinyVm {
 
 The stack-based architecture remains, but the execution engine is now entirely decentralized into standalone micro-handlers rather than a monolithic loop.
 
+### 2.6 Secure Memory Management (RAII Scrubbing)
+To prevent sensitive data leaks in memory, the VM uses `SecureBuffer<N>`:
+- **Automatic Zeroing**: Implements the `Drop` trait to perform `write_volatile` zeroing of the entire buffer when it goes out of scope.
+- **RAII Pattern**: Ensures that decrypted strings or encryption keys never persist in heap or stack memory longer than necessary.
+
 ---
 
 ## Architecture Layer 3: Distributed Suspicion Scoring & Integrity Monitoring
@@ -523,18 +546,20 @@ Rather than using a single boolean flag, fdebug maintains a **distributed, shard
 
 ### 3.1 Sharded Threat Detection
 
-The suspicion score is split across 16 independent `AtomicU32` shards (`SUSPICION_SHARDS`). Each detection event adds points to a different shard selected by a scatter algorithm:
+The suspicion score is split across **128 independent `AtomicU32` shards** (`SUSPICION_SHARDS`), implementing an **Active/Decoy (64/64)** distribution.
+-   **Active Shards (64)**: Store real suspicion scores masked with build-time values.
+-   **Decoy Shards (64)**: Filled with high-entropy decoy values to dilute the memory signature and mislead automated analysis tools.
+
+Each detection event adds points to a random active shard selected by a scatter algorithm:
 
 ```rust
-pub static SUSPICION_SHARDS: [AtomicU32; 16] = [
+pub static SUSPICION_SHARDS: [AtomicU32; 128] = [
     AtomicU32::new(mix_seed(DYNAMIC_SEED, 0)),
-    AtomicU32::new(mix_seed(DYNAMIC_SEED, 1)),
-    // ... 14 more
-    AtomicU32::new(mix_seed(DYNAMIC_SEED, 15)),
+    // ... 127 more
 ];
 
-pub static SHARD_MASKS: [u32; 16] = [
-    mix_seed(DYNAMIC_SEED, 0), mix_seed(DYNAMIC_SEED, 1), // ... etc
+pub static SHARD_MASKS: [u32; 128] = [
+    mix_seed(DYNAMIC_SEED, 0), // ... etc
 ];
 ```
 
@@ -668,6 +693,11 @@ transformation_key ^= POISON_SEED.load(Ordering::SeqCst);
 let actual_price = vault_price ^ (transformation_key as u32 % 0xFFFF);
 // If key is garbage, price is garbage
 ```
+
+### 3.5 Opaque Predicate Obfuscation
+The system replaces direct boolean comparisons with **Opaque Predicates**:
+- **Mathematical Concealment**: Instead of `if a == b`, the system uses `opaque_predicate_eq(a, b)`, which performs XOR-based bit-counting and wrapping operations that are functionally equivalent but statically opaque.
+- **Flow Diversion**: Branching logic is directed through calculation chains that prevent simple "NZ" to "Z" patching in disassemblers.
 
 ---
 

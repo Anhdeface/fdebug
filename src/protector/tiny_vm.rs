@@ -18,6 +18,8 @@ use core::hint::black_box;
 use core::ptr::write_volatile;
 
 use crate::protector::seed_orchestrator::{get_dynamic_seed, get_dynamic_seed_u8};
+use crate::protector::pe_integrity::{heartbeat_check, INTEGRITY_TOKEN};
+use crate::protector::global_state::POISON_SEED;
 
 // ============================================================================
 // LIGHTWEIGHT PRNG & LOGIC-TO-PHYSICAL MAPPING
@@ -339,9 +341,12 @@ macro_rules! dynamic_str {
             // The runtime VM will use the real atomic value.
             const DEFAULT_GLOBAL_KEY: u8 = 0x42; 
 
+            // Snapshot integrity token for consistent encoding of this session
+            let integrity_snapshot = $crate::protector::pe_integrity::INTEGRITY_TOKEN.load(std::sync::atomic::Ordering::Relaxed) as u8;
+
             // Advanced Rolling Key Encoding Logic (Multi-Stage Mixing)
-            // Decryption: real = (raw ^ key ^ enc_key).wrapping_add(pos_salt)
-            // Encoding:   raw = (real.wrapping_sub(pos_salt)) ^ key ^ enc_key
+            // Decryption: real = (raw ^ key ^ enc_key ^ integrity_token).wrapping_add(pos_salt)
+            // Encoding:   raw = (real.wrapping_sub(pos_salt)) ^ key ^ enc_key ^ integrity_token
             // Key Update: Same for both (using raw byte)
             let mut emit = |real_op: u8| {
                 if bc_idx < bytecode.len() {
@@ -349,7 +354,7 @@ macro_rules! dynamic_str {
                     let pos_salt = (bc_idx as u8).wrapping_mul(0x7);
                     
                     // 2. Encrypt
-                    let raw = real_op.wrapping_sub(pos_salt) ^ bc_key ^ rolling_key;
+                    let raw = real_op.wrapping_sub(pos_salt) ^ bc_key ^ rolling_key ^ integrity_snapshot;
                     bytecode[bc_idx] = raw;
                     bc_idx += 1;
                     
@@ -359,6 +364,10 @@ macro_rules! dynamic_str {
                     rolling_key ^= DEFAULT_GLOBAL_KEY;
                 }
             };
+
+            emit($crate::protector::tiny_vm::VmOp::op_load_imm());
+            let kb = (runtime_key as u64).to_le_bytes();
+            for b in kb { emit(b); }
 
             emit($crate::protector::tiny_vm::VmOp::op_load_imm());
             let lb = (S_LEN as u64).to_le_bytes();
@@ -469,11 +478,22 @@ unsafe fn fetch_next_instruction(
     
     let raw_byte = bytecode[state.vip];
     
+    // [HEARTBEAT INJECTION]
+    // Randomly trigger integrity checks based on VIP/Key entropy
+    // Used sparingly to avoid performance hit, but enough to entangle long-running VMs
+    if (state.vip & 0x7F) == 0x3 { 
+        let seed = (state.key as u32).wrapping_add(state.vip as u32);
+        crate::protector::pe_integrity::heartbeat_check(seed);
+    }
+
     // 1. Calculate Position Dependent Salt
     let pos_salt = (state.vip as u8).wrapping_mul(0x7);
     
-    // 2. Decode: real = (raw ^ key ^ enc_key).wrapping_add(pos_salt)
-    let real_opcode = (raw_byte ^ encryption_key ^ state.key)
+    // Entangle with Global Integrity Token
+    let integrity_val = crate::protector::pe_integrity::INTEGRITY_TOKEN.load(std::sync::atomic::Ordering::Relaxed) as u8;
+
+    // 2. Decode: real = (raw ^ key ^ enc_key ^ integrity_token).wrapping_add(pos_salt)
+    let real_opcode = (raw_byte ^ encryption_key ^ state.key ^ integrity_val)
         .wrapping_add(pos_salt);
     
     // 3. Update Rolling Key (Multi-Stage State Mixing)
@@ -507,8 +527,11 @@ unsafe fn fetch_operand_byte(
     // 1. Calculate Position Dependent Salt
     let pos_salt = (state.vip as u8).wrapping_mul(0x7);
     
-    // 2. Decode: real = (raw ^ key ^ enc_key).wrapping_add(pos_salt)
-    let val = (raw_byte ^ encryption_key ^ state.key)
+    // Entangle with Global Integrity Token
+    let integrity_val = crate::protector::pe_integrity::INTEGRITY_TOKEN.load(std::sync::atomic::Ordering::Relaxed) as u8;
+
+    // 2. Decode: real = (raw ^ key ^ enc_key ^ integrity_token).wrapping_add(pos_salt)
+    let val = (raw_byte ^ encryption_key ^ state.key ^ integrity_val)
         .wrapping_add(pos_salt);
     
     // 3. Update Rolling Key (Multi-Stage State Mixing)
@@ -1132,6 +1155,7 @@ pub fn get_error_message(error_type: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn test_encrypted_strings_hello() {
@@ -1237,5 +1261,58 @@ mod tests {
         let duration = start.elapsed();
         println!("LTP Map Generation took: {:?}", duration);
         assert!(duration.as_micros() < 100, "Case 3 Failed: Map generation too slow! took {}us", duration.as_micros());
+    }
+
+    #[test]
+    fn test_vm_entanglement_sensitivity() {
+        // 1. Pristine Run
+        // Reset global state for test
+        crate::protector::pe_integrity::INTEGRITY_TOKEN.store(0xDEADBEEFCAFEBABE, Ordering::SeqCst);
+        
+        let vm = TinyVm::new(0x42);
+        let mut state = VmExecutionState {
+            vip: 0,
+            key: 0, // VM starts with 0 rolling key
+            next_idx: 0,
+            exit_value: 0,
+            should_exit: false,
+        };
+
+        // Opcode: 0x99 (EXIT)
+        let op_exit = VmOp::op_exit(); 
+        
+        let mut bytecode = [0u8; 16];
+        let bc_idx = 0;
+        let pos_salt = (bc_idx as u8).wrapping_mul(0x7);
+        let integrity = crate::protector::pe_integrity::INTEGRITY_TOKEN.load(Ordering::Relaxed) as u8;
+        let enc_key = 0x42;
+        let rolling_key = 0;
+        
+        // encode: raw = (real - pos_salt) ^ key ^ enc_key ^ integrity
+        bytecode[0] = op_exit.wrapping_sub(pos_salt) ^ enc_key ^ rolling_key ^ integrity;
+
+        unsafe {
+            fetch_next_instruction(&bytecode, &mut state, enc_key);
+        }
+        
+        assert_eq!(state.next_idx, op_exit, "Decoder should work with correct Token");
+
+        // 2. Modified Integrity Run (Simulate Skip/Patch)
+        // Corrupt the token
+        crate::protector::pe_integrity::INTEGRITY_TOKEN.fetch_xor(0xFF, Ordering::SeqCst);
+        
+        let mut state_bad = VmExecutionState {
+            vip: 0,
+            key: 0,
+            next_idx: 0,
+            exit_value: 0,
+            should_exit: false,
+        };
+        
+        unsafe {
+            fetch_next_instruction(&bytecode, &mut state_bad, enc_key);
+        }
+        
+        assert_ne!(state_bad.next_idx, op_exit, "Decoder MUST fail with bad Token");
     }
 }

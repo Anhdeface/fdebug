@@ -15,29 +15,26 @@ FDebug Protection:      Debugger detected → Silent Corruption →
                         debugging non-existent bugs → Attacker gives up
 ```
 
-### 🆕 Latest Update: TinyVM 2.0 & Anti-Dump Hardening
+### 🆕 Latest Update: Watchdog v2 & Stability Refinement
 
-The system core has been upgraded with **TinyVM 2.0** and **Surgical Anti-Dump**:
+The system has been hardened with **Watchdog v2** and environment-adaptive scoring:
 
--   **Randomized V-Table (Fail-Deadly)**: The VM now uses specific "Logic-to-Physical" mapping shuffled at runtime. If a debugger is detected (suspicious seed), the mapping is chaotically randomized, causing the VM to execute wrong instructions silently.
--   **Indirect Threading**: Replaced standard switch-dispatch with a 256-entry function pointer table, defeating control flow graph (CFG) reconstruction tools.
--   **Rolling Key Encryption**: New multi-stage interaction mixing `(key + raw) * prime ^ global_entropy`, making frequency analysis impossible.
--   **Selective PE Erasure**: Smart Anti-Dump that wipes `NT Signature`, `EntryPoint`, and `SizeOfImage` while preserving `DOS Headers` to maintain system stability (preventing crashes in CRT/Windows APIs).
-
-See [Updates Log](docs/UPDATES.md) and [Architecture Guide](docs/architecture_guide_NEW.md#14-surgical-anti-dump--indirect-syscalls) for details.
+-   **Silent Poisoning (Watchdog v2)**: Replaced process termination with **Silent Data Poisoning**. If thread suspension is detected (via a debugger), the system corrupts internal cryptographic keys and suspicious seeds instead of killing the process.
+-   **Adaptive Sensitivity**: Implemented a 5-second baseline threshold with **Heavy-Load Awareness** (doubles timeout to 10s during high CPU usage) to virtually eliminate false positives in laggy or virtualized environments.
+-   **Hypervisor Optimization**: Refined CPUID and timing detection logic. The system now reports a stable **60 suspicion score** on Hyper-V environments, allowing the app to run safely while remaining vigilant.
+-   **Precision Anti-Dump**: Fixed stealth state verification to specifically monitor **NT Signature erasure**, ensuring protection even when DOS headers are preserved for stability.
 
 ## Key Features
 
 | Feature | Implementation | Effect |
 | --- | --- | --- |
 | **Multi-Vector Detection** | VEH hooks, RDTSC timing, Hardware BP, PEB checks | Catches debugging from multiple angles simultaneously |
-| **Randomized TinyVM** | Indirect Threading + Randomized V-Table | No switch/match; Helper addresses shuffled at runtime > |
-| **Distributed State** | 16-shard atomic scoring | Memory freezing attacks fail; manipulation is self-detecting |
+| **Watchdog v2 (Liveness)** | Direct Syscall + Adaptive Thresholding | Detects suspension; triggers **Silent Poisoning** instead of exit ✨ |
+| **Randomized TinyVM** | Indirect Threading + Randomized V-Table | No switch/match; Helper addresses shuffled at runtime |
+| **Distributed Scoring** | 128-shard atomic scoring (Active/Decoy) | Memory manipulation is self-detecting; massive entropy dilution |
 | **Silent Corruption** | Token-based key poisoning | No crashes; just silently wrong results |
-| **Honey Pot Traps** | Decoy functions with watchdog monitoring | Reverse engineers patch decoys → automatic detection → execution poisoned |
-| **Mathematical Coupling** | Security tokens bound to business logic | Cracked protection automatically invalidates calculations |
-| **Zero-Static-Trace Strings** | `dynamic_str!` macro with TinyVM reconstruction | No string data in .rdata; volatile stack operations only ✨ |
-| **Surgical Anti-Dump** | Selective PE Header Corruption | Bypasses EDR hooks; memory dumps produce invalid PE files while keeping app stable ✨ |
+| **Continuous Sharding** | sharded integrity + VM entanglement | PE modifications naturally break VM execution loop ✨ |
+| **Surgical Anti-Dump** | Selective PE Header Corruption | Bypasses EDR hooks; wipes NT headers but keeps DOS for stability |
 
 ## Quick Start
 
@@ -249,11 +246,10 @@ Protection Layer
 
 ### Layer 4: Integrity (Distributed Scoring)
 
-- Suspicion score split across 16 atomic shards
-- Each shard masked with build-time derived value
-- Reconstructed score: `score = (shard0 ^ mask0) + (shard1 ^ mask1) + ...`
-- Memory freezing attacks fail: zeroing shards creates massive score spike
-- SipHash integrity verification detects tampering
+- **128-Shard Atomic Architecture**: Suspicion score is split across 128 independent shards (64 Active, 64 Decoy).
+- **Active/Decoy Dilution**: Decoy shards store high-entropy "noise" while active shards track real detections, making state-freezing attacks exponentially harder.
+- **XOR Masking**: Each shard is masked with a build-time derived value; zeroing shards creates a massive score spike.
+- **VM Entanglement**: TinyVM decryption is mathematically tied to the sharded integrity hash; tampering breaks the VM loop.
 
 ### Layer 5: Deception (Honey Pots)
 

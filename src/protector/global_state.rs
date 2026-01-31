@@ -7,6 +7,8 @@ use std::sync::OnceLock;
 #[allow(non_snake_case)]
 /// Diagnostic mode for debugging false positives
 pub static DIAGNOSTIC_MODE: AtomicBool = AtomicBool::new(true);
+/// Guard to ensure shards are initialized before adding or reconstructing suspicion
+pub static GLOBAL_STATE_INITIALIZED: AtomicBool = AtomicBool::new(false);
 /// Array to track triggered checkpoints and their total suspicion
 pub static TRIGGERED_CHECKPOINTS: [AtomicU32; 8] = [
     AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
@@ -321,6 +323,9 @@ pub fn get_current_timestamp() -> u64 {
         .as_secs()
 }
 
+/// Last timestamp specific to VM execution for Watchdog
+pub static LAST_VM_HEARTBEAT: AtomicU64 = AtomicU64::new(0);
+
 /// Detect build mode (debug/release)
 fn detect_build_mode() -> &'static str {
     if cfg!(debug_assertions) {
@@ -603,6 +608,9 @@ pub fn add_suspicion_at(severity: DetectionSeverity, checkpoint_id: u8) {
 
 /// Helper to add score to specific shard safely (for Active shards)
 fn add_to_shard(idx: usize, amount: u32) {
+    if !GLOBAL_STATE_INITIALIZED.load(Ordering::Relaxed) {
+        return;
+    }
     let mask = get_shard_mask(idx);
     let mut current_encoded = SUSPICION_SHARDS[idx].load(Ordering::SeqCst);
     
@@ -744,6 +752,9 @@ fn apply_decay() {
 /// Logic: Value_i = (Shard_i ^ Mask_i).rotate_right(i % 32)
 /// Self-Defense: If memory is zeroed, XOR + Rotate results in a massive pseudo-random score.
 pub fn reconstruct_threat_score() -> u32 {
+    if !GLOBAL_STATE_INITIALIZED.load(Ordering::Relaxed) {
+        return 0;
+    }
     // Pre-calculate pair map once for O(1) per-shard Active check
     let seed = crate::protector::seed_orchestrator::get_dynamic_seed();
     let pair_map = mix_seed_to_u64(seed);
@@ -776,7 +787,9 @@ pub fn reconstruct_threat_score() -> u32 {
 pub fn get_suspicion_score() -> u32 {
     apply_decay();
     let score = reconstruct_threat_score();
-    if score > 200 {
+    // Honeytrap: If reconstructed score > 500, return 0xFFFFFFFF to signal tampering
+    // Increased from 200 to 500 for better environmental tolerance
+    if score > 500 {
         return 0xFFFFFFFF;
     }
     score
@@ -845,6 +858,9 @@ pub fn initialize_veh_protection() {
 
     // Recalculate integrity hash after initialization
     recalculate_global_integrity();
+
+    // Set initialization flag after everything is ready
+    GLOBAL_STATE_INITIALIZED.store(true, Ordering::SeqCst);
 }
 
 /// Initialize SipHash constants with dynamic values using runtime seed to make them non-standard
@@ -929,4 +945,28 @@ pub fn poison_encryption_on_dump_attempt() {
 
     // Add critical suspicion
     add_suspicion(DetectionSeverity::Critical);
+}
+
+/// TRIGGER SILENT POISONING
+/// Corrupts internal seeds and keys to break future execution without an immediate crash.
+/// This is the stealthiest way to handle detection.
+pub fn trigger_silent_poisoning() {
+    let entropy = crate::protector::seed_orchestrator::get_dynamic_seed();
+    
+    // 1. Corrupt POISON_SEED (Affects all future derived tokens)
+    POISON_SEED.fetch_xor(entropy as u64 ^ 0xDEADBEEFCAFEBABE, Ordering::SeqCst);
+    
+    // 2. Corrupt Encryption Keys
+    GLOBAL_ENCRYPTION_KEY.fetch_xor((entropy & 0xFF) as u8, Ordering::SeqCst);
+    GLOBAL_VIRTUAL_MACHINE_KEY.fetch_xor(((entropy >> 8) & 0xFF) as u8, Ordering::SeqCst);
+    
+    // 3. Corrupt Integrity Hash (Ensures future validation fails)
+    let current_hash = GLOBAL_INTEGRITY_HASH.load(Ordering::Relaxed);
+    GLOBAL_INTEGRITY_HASH.store(current_hash ^ 0xBAADF00DCAFEBABE ^ (entropy as u64), Ordering::SeqCst);
+    
+    // 4. Force Critical Suspicion
+    add_suspicion(DetectionSeverity::Critical);
+    
+    // 5. Disable Diagnostics (Blinding the attacker)
+    DIAGNOSTIC_MODE.store(false, Ordering::SeqCst);
 }

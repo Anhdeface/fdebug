@@ -21,16 +21,19 @@ Complete guide to using the fdebug anti-debug protection system in Rust applicat
 
 ### Basic Setup
 
+The standard way to initialize the protector is via the `setup_anti_debug!` macro. This macro ensures all underlying systems (VEH, Anti-Dump, Global State) are initialized in the correct sequence before the `Protector` instance is created.
+
 ```rust
-use fdebug::protector::{Protector, get_dynamic_seed};
+use fdebug::setup_anti_debug;
+use fdebug::protector::get_dynamic_seed;
 
 fn main() {
-    // Initialize the protector with a static seed or get_dynamic_seed()
-    let protector = Protector::new(get_dynamic_seed());
+    // 1. Mandatory initialization via macro
+    let protector = setup_anti_debug!(get_dynamic_seed());
     
     println!("[+] Anti-debug protection initialized");
     
-    // Get current suspicion score
+    // 2. Get current suspicion score
     let score = fdebug::protector::get_suspicion_score();
     println!("[*] Environment suspicion score: {}", score);
 }
@@ -64,6 +67,19 @@ fn main() {
 ---
 
 ## Core API Reference
+
+### Mandatory Initialization Macro
+
+#### `setup_anti_debug!($seed)`
+The **only recommended way** to instantiate the protection system.
+- **Arguments**: A `u32` seed (e.g., from `get_dynamic_seed()`).
+- **Effects**: 
+  - Calls `init_protector()` internally.
+  - Resolves indirect syscalls and registers the Master VEH.
+  - Caches PE metadata and triggers Anti-Dump header erasure.
+  - Returns a `Protector` instance.
+
+---
 
 ### Protector Structure
 
@@ -522,6 +538,20 @@ if suspicious_condition() {
 fn suspicious_condition() -> bool {
     // Your custom detection logic
     false
+}
+```
+
+### Opaque Predicates
+
+```rust
+use fdebug::protector::{opaque_predicate_eq, opaque_predicate_branch};
+
+// Replace direct boolean checks with opaque predicates to defeat static analysis
+let is_valid = opaque_predicate_eq(user_input, 0x12345678);
+
+if opaque_predicate_branch(is_valid) {
+    // This branch is hidden from simple JMP patches
+    process_secure_data();
 }
 ```
 

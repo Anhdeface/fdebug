@@ -191,6 +191,12 @@ impl Protector {
             
             // Monitor decoy functions for patching
             decoy_system::watchdog_check_decoys();
+
+            // DIRECT SYSCALL WATCHDOG (Liveness Check)
+            // Checks if the thread was suspended by a debugger
+            unsafe {
+                anti_dump::check_system_liveness_via_kuser();
+            }
         }
     }
 
@@ -252,11 +258,15 @@ impl Protector {
              let base = GetModuleHandleW(std::ptr::null());
              if base.is_null() { return false; }
              
-             // Check if MZ signature (0x5A4D) is present
-             // If PRESENT (0x5A4D), then Anti-Dump FAILED.
+             // Check if NT signature (0x00004550) is present
+             // The offset to NT headers is at base + 0x3C
+             let lfanew = *(base.offset(0x3C) as *const i32);
+             let nt_sig_ptr = base.offset(lfanew as isize) as *const u32;
+             
+             // If PRESENT (0x00004550), then Anti-Dump header erasure FAILED.
              // If ERASED (Garbage), then Anti-Dump PASSED.
-             let magic = std::ptr::read_volatile(base as *const u16);
-             std::hint::black_box(magic != 0x5A4D)
+             let signature = std::ptr::read_volatile(nt_sig_ptr);
+             std::hint::black_box(signature != 0x00004550)
         }
         #[cfg(not(target_os = "windows"))]
         true
@@ -434,7 +444,7 @@ fn apply_contextual_corruption<T>(value: T) -> T {
 }
 
 /// Trait for types that can be corrupted in context-aware ways
-pub(crate) trait ContextualCorruption {
+pub trait ContextualCorruption {
     fn corrupt_if_needed(self) -> Self;
 }
 

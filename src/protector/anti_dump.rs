@@ -147,6 +147,30 @@ unsafe fn resolve_indirect_syscalls() -> bool {
     true
 }
 
+static EXIT_SYSCALL_ID: AtomicUsize = AtomicUsize::new(0);
+
+unsafe fn resolve_exit_syscall() -> bool {
+    // Resolve NtTerminateProcess
+    let ntdll = GetModuleHandleW([b'n' as u16, b't' as u16, b'd' as u16, b'l' as u16, b'l' as u16, 0].as_ptr());
+    if ntdll.is_null() { return false; }
+    
+    let addr = GetProcAddress(ntdll, b"NtTerminateProcess\0".as_ptr());
+    if addr.is_null() { return false; }
+    
+    // Check for SSN (mov eax, SSN)
+    for i in 0..32 {
+        if *addr.add(i) == 0xB8 {
+            let ssn = ptr::read_unaligned(addr.add(i+1) as *const u32);
+            EXIT_SYSCALL_ID.store(ssn as usize, Ordering::SeqCst);
+            return true;
+        }
+    }
+    
+    // Hardcoded fallback for Win10/11 x64 (often 0x2C) if scan fails
+    EXIT_SYSCALL_ID.store(0x2C, Ordering::SeqCst); 
+    true
+}
+
 #[cfg(target_arch = "x86_64")]
 unsafe fn indirect_nt_protect_virtual_memory(
     process_handle: isize,
@@ -338,6 +362,8 @@ pub fn init_anti_dump() -> bool {
             crate::protector::global_state::add_suspicion(crate::protector::global_state::DetectionSeverity::Medium);
         }
         
+        let _ = resolve_exit_syscall();
+        
         // 2. Register Global Production VEH -> REMOVED (Handled by enhanced_veh::init_master_veh)
         
         // 3. Deploy Passive Honeytraps (Decoy Pages)
@@ -375,10 +401,75 @@ pub unsafe fn handle_guard_page_violation(ptrs: *mut EXCEPTION_POINTERS) -> bool
 fn get_kuser_shared_entropy() -> u64 {
     unsafe {
         // SAFETY: KUSER_SHARED_DATA is a fixed page at 0x7FFE0000 in Windows (user mode).
-        // 0x7FFE0014 is InterruptTime, 0x7FFE0008 is SystemTime.
-        // These addresses are constant and readable in all Windows versions (XP+).
-        let it = (0x7FFE0014 as *const u64).read_volatile();
+        // 0x7FFE0014 is InterruptTime (low), 0x7FFE0008 is SystemTime.
+        let it_low = (0x7FFE0014 as *const u32).read_volatile();
         let st = (0x7FFE0008 as *const u64).read_volatile();
-        it ^ st
+        (it_low as u64) ^ st
     }
+}
+
+/// DIRECT SYSCALL WATCHDOG
+/// Checks if the VM loop has updated its heartbeat recently.
+/// If not (thread suspended by debugger), it silently poisons execution.
+pub unsafe fn check_system_liveness_via_kuser() {
+    // 1. Warm-up Period: Skip liveness checks for the first 10 seconds
+    if crate::protector::anti_debug::get_load_time().elapsed().as_secs() < 10 {
+        return;
+    }
+
+    let last_heartbeat = crate::protector::global_state::LAST_VM_HEARTBEAT.load(Ordering::Relaxed);
+    
+    // If heartbeat is 0, system might be just starting, skip check
+    if last_heartbeat == 0 { return; }
+    
+    // Read current InterruptTime (100ns units) from KUSER_SHARED_DATA
+    // 0x7FFE0014 is InterruptTime (low 32 bits), we read all 64 bits starting at 0x7FFE0014
+    // Note: On x64 this is stable.
+    let current_time = (0x7FFE0014 as *const u64).read_volatile();
+    
+    // 2. Adaptive Thresholding
+    // Default threshold: 5 seconds (50,000,000 units)
+    let mut threshold = 50_000_000;
+    
+    // If system is under heavy load, double the threshold to avoid false positives
+    if crate::protector::global_state::is_system_under_heavy_load() {
+        threshold *= 2;
+    }
+    
+    // Delta in 100ns units.
+    let delta = current_time.wrapping_sub(last_heartbeat);
+    
+    if delta > threshold {
+        // Heartbeat stopped! Likely debugger suspension or process freeze.
+        // SILENT DEFENSE: Instead of killing, we poison the environment.
+        crate::protector::global_state::trigger_silent_poisoning();
+    }
+}
+
+/// Forcefully terminate process via Raw Syscall (Bypassing hooks)
+unsafe fn sys_force_exit() {
+    let ssn = EXIT_SYSCALL_ID.load(Ordering::Relaxed);
+    if ssn == 0 {
+        // Fallback if not initialized
+        std::process::exit(0xDEAD);
+    }
+    
+    let j_addr = SYSCALL_J_ADDR.load(Ordering::Relaxed);
+    if j_addr.is_null() {
+        std::process::exit(0xDEAD);
+    }
+    
+    // NtTerminateProcess(ProcessHandle, ExitStatus)
+    // ProcessHandle = -1 (Current Process)
+    // ExitStatus = 0xC000000D (STATUS_INVALID_PARAMETER) - confusing error code
+    
+    #[cfg(target_arch = "x86_64")]
+    std::arch::asm!(
+        "mov r10, -1",      // Param 1: ProcessHandle
+        "mov rdx, 0xC000000D", // Param 2: ExitStatus
+        "mov eax, {ssn:e}", // SSN
+        "syscall",
+        ssn = in(reg) ssn,
+        options(noreturn)
+    );
 }

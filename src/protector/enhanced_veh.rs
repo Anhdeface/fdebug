@@ -87,6 +87,14 @@ unsafe extern "system" fn master_veh_handler(exception_info: *mut EXCEPTION_POIN
     let context = &mut *(*exception_info).ContextRecord;
     
     // ========================================================================
+    // PHASE 0: WATCHDOG & LIVENESS CHECK
+    // ========================================================================
+    // Check if the VM or system heartbeat has been frozen (Suspension Detection)
+    unsafe {
+        crate::protector::anti_dump::check_system_liveness_via_kuser();
+    }
+
+    // ========================================================================
     // PHASE 1: ENTRY FILTERING
     // ========================================================================
     // Ensure the exception occurs within the legitimate .text section
@@ -158,6 +166,10 @@ unsafe extern "system" fn master_veh_handler(exception_info: *mut EXCEPTION_POIN
     // ========================================================================
     
     if record.ExceptionCode == EXCEPTION_SINGLE_STEP {
+        // Enforce Integrity Heartbeat during Debugging/Stepping
+        // If an attacker steps through, we verify memory integrity using their current location as entropy
+        crate::protector::pe_integrity::heartbeat_check(context.Rip as u32);
+
         // Verify if this single step is authorized (matches our Heartbeat) via TinyVM
         // If anti_debug didn't catch it (e.g. some other mechanism), verify strictly.
         if !verify_drx_integrity(context) {

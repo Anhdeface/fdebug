@@ -347,3 +347,36 @@ The core Obfuscation (Layer 3) and Integrity (Layer 4) protection logic has been
 #### 2. README.md
 - Update "Layer 3" description to mention "Randomized V-Table".
 - Add note about "Fail-Deadly" VM behavior.
+---
+
+## Latest Update: Watchdog v2 & Stability Refinement
+
+### Summary of Changes
+
+This update focuses on transitioning from "Detection-and-Termination" to **"Detection-and-Silent-Poisoning"** while maximizing system stability in virtualized environments (Hyper-V/WSL2).
+
+### What Changed:
+
+#### 1. Watchdog v2 (Liveness Monitoring)
+- **Silent Poisoning**: Replaced process termination with `trigger_silent_poisoning()`. The app remains active but all sensitive data transforms into garbage.
+- **5s Baseline Threshold**: Increased timeout to 5 seconds to better handle system stutter.
+- **Heavy-Load Aware**: Dynamically doubles threshold to **10 seconds** when CPU usage is extremely high.
+- **Warm-up Grace**: Skip checks for the first 10 seconds of process life to allow safe initialization.
+
+#### 2. Environment Compatibility (Hyper-V Optimization)
+- **Baseline Score (60)**: Refactored Hyper-V/VMware detection to a stable baseline of 60 points (below the 100-point poisoning threshold).
+- **Consolidated Scorers**: Prevents double-counting of hypervisor indicators (CPUID + Timing + Brand) to eliminate false positives.
+
+#### 3. Initialization Stability
+- **Global Initialization Guards**: Added `GLOBAL_STATE_INITIALIZED` to `global_state.rs` to prevent reading/writing sharded scores before entropy is fully reconstructed.
+- **NT Signature Verification**: Fixed Anti-Dump check to monitor the **NT Header signature** (erased for security) instead of the **DOS MZ magic** (preserved for stability).
+
+#### 4. PE Integrity Hardening
+- **Sharded Verification**: `.text` section is now verified in 1KB chunks driven by the VM heartbeat.
+- **Cryptographic Entanglement**: TinyVM decryption keys are mathematically bound to the integrity token; any byte-patching in the binary naturally breaks VM logic.
+
+### Integration Metrics:
+- **Baseline Suspicion (Hyper-V)**: 60 points
+- **Detection Baseline (Physical)**: 0-10 points
+- **Poisoning Trigger**: 100+ points
+- **Watchdog Timeout**: 5s (Adaptive to 10s)
