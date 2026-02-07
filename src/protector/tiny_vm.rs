@@ -21,6 +21,32 @@ use crate::protector::seed_orchestrator::{get_dynamic_seed, get_dynamic_seed_u8}
 use crate::protector::pe_integrity::{heartbeat_check, INTEGRITY_TOKEN};
 use crate::protector::global_state::POISON_SEED;
 
+// --- [START] FFI & INTRINSICS ---
+#[link(name = "kernel32")]
+extern "system" {
+    fn QueryThreadCycleTime(ThreadHandle: *mut std::ffi::c_void, CycleTime: *mut u64) -> i32;
+}
+
+#[inline(always)]
+unsafe fn get_thread_cycles() -> u64 {
+    let mut cycles: u64 = 0;
+    // Pseudo-handle -2 (0xFF...FE) is CurrentThread. Fast path, no OpenThread needed.
+    let handle = -2isize as *mut std::ffi::c_void;
+    if QueryThreadCycleTime(handle, &mut cycles) == 0 {
+        return 0; // Fail silent
+    }
+    cycles
+}
+
+#[inline(always)]
+unsafe fn get_rip_marker() -> u16 {
+    let rip: u64;
+    // LEA is atomic and side-effect free.
+    std::arch::asm!("lea {}, [rip]", out(reg) rip);
+    ((rip >> 32) & 0xFFFF) as u16
+}
+// --- [END] FFI & INTRINSICS ---
+
 // ============================================================================
 // LIGHTWEIGHT PRNG & LOGIC-TO-PHYSICAL MAPPING
 // ============================================================================
@@ -223,6 +249,10 @@ pub struct VmExecutionState {
     pub next_idx: u8,
     pub should_exit: bool,
     pub exit_value: u64,
+    /// Anchor for RIP entanglement (high-bits of entry address)
+    pub anchor_rip: u16,
+    /// Previous thread cycle count for heartbeat detection
+    pub last_cycles: u64,
 }
 
 /// Handler function signature for indirect threading
@@ -1079,10 +1109,20 @@ pub fn vm_execute(bytecode: &[u8], encryption_key: u8, context_key: u64) -> u64 
         next_idx: 0,
         should_exit: false,
         exit_value: 0,
+        anchor_rip: 0,
+        last_cycles: 0,
     };
 
     // Build dispatch table (physically shuffled)
     let handlers = build_dispatch_table();
+
+    // =========================================================================
+    // ENTANGLED EXECUTION: Initialize Anchors (Before Loop)
+    // =========================================================================
+    unsafe {
+        state.anchor_rip = get_rip_marker();
+        state.last_cycles = get_thread_cycles();
+    }
 
     // Bootstrap: fetch first instruction
     unsafe {
@@ -1090,13 +1130,40 @@ pub fn vm_execute(bytecode: &[u8], encryption_key: u8, context_key: u64) -> u64 
     }
 
     // =========================================================================
-    // THE TRAMPOLINE - Shuffled Indirect Call
+    // THE TRAMPOLINE - Shuffled Indirect Call with Entanglement
     // =========================================================================
     loop {
         if state.should_exit {
             break;
         }
-        
+
+        // =====================================================================
+        // ENTANGLEMENT LOGIC (Anti-DBI / Anti-Trace)
+        // =====================================================================
+        unsafe {
+            // --- Anti-DBI: RIP Entanglement ---
+            // If code is relocated (DBI injection), RIP high-bits change.
+            // XOR entropy into key -> Garbage execution if tampered.
+            let current_rip_marker = get_rip_marker();
+            let entropy = current_rip_marker ^ state.anchor_rip;
+            state.key ^= entropy as u8;
+
+            // --- Anti-Trace: Thread Cycle Heartbeat ---
+            // Every 16 instructions, check for excessive CPU cycle consumption.
+            // Single-stepping or tracing causes massive overhead (50k+ cycles).
+            if (state.vip & 0xF) == 0 {
+                let current_cycles = get_thread_cycles();
+                let delta = current_cycles.wrapping_sub(state.last_cycles);
+                
+                // Threshold: 50,000 cycles per 16 instructions is abnormally high
+                // Normal execution: ~1000-5000 cycles. Tracing: 100k+ cycles.
+                if delta > 50_000 {
+                    state.key ^= 0x55; // Corrupt key silently
+                }
+                state.last_cycles = current_cycles;
+            }
+        }
+
         // THE CRITICAL LINE: Map Logical Opcode -> Physical Index
         let physical_idx = ltp_map[state.next_idx as usize];
         
@@ -1276,6 +1343,8 @@ mod tests {
             next_idx: 0,
             exit_value: 0,
             should_exit: false,
+            anchor_rip: 0,
+            last_cycles: 0,
         };
 
         // Opcode: 0x99 (EXIT)
@@ -1307,6 +1376,8 @@ mod tests {
             next_idx: 0,
             exit_value: 0,
             should_exit: false,
+            anchor_rip: 0,
+            last_cycles: 0,
         };
         
         unsafe {

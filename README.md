@@ -15,13 +15,14 @@ FDebug Protection:      Debugger detected → Silent Corruption →
                         debugging non-existent bugs → Attacker gives up
 ```
 
-### 🆕 Latest Update: Watchdog v2 & Stability Refinement
+### [UPDATE] Latest Update: Watchdog v2 & Stability Refinement
 
 The system has been hardened with **Watchdog v2** and environment-adaptive scoring:
 
 -   **Silent Poisoning (Watchdog v2)**: Replaced process termination with **Silent Data Poisoning**. If thread suspension is detected (via a debugger), the system corrupts internal cryptographic keys and suspicious seeds instead of killing the process.
 -   **Adaptive Sensitivity**: Implemented a 5-second baseline threshold with **Heavy-Load Awareness** (doubles timeout to 10s during high CPU usage) to virtually eliminate false positives in laggy or virtualized environments.
 -   **Hypervisor Optimization**: Refined CPUID and timing detection logic. The system now reports a stable **60 suspicion score** on Hyper-V environments, allowing the app to run safely while remaining vigilant.
+-   **Entangled Execution (Anti-DBI/Anti-Trace)**: Integrated internal anchors into the VM execution loop. The decryption key is now mathematically bound to the code's memory location (RIP) and execution timing (Thread Cycles), silently corrupting the execution state if relocation or tracing is detected.
 -   **Precision Anti-Dump**: Fixed stealth state verification to specifically monitor **NT Signature erasure**, ensuring protection even when DOS headers are preserved for stability.
 
 ## Key Features
@@ -29,11 +30,12 @@ The system has been hardened with **Watchdog v2** and environment-adaptive scori
 | Feature | Implementation | Effect |
 | --- | --- | --- |
 | **Multi-Vector Detection** | VEH hooks, RDTSC timing, Hardware BP, PEB checks | Catches debugging from multiple angles simultaneously |
-| **Watchdog v2 (Liveness)** | Direct Syscall + Adaptive Thresholding | Detects suspension; triggers **Silent Poisoning** instead of exit ✨ |
+| **Watchdog v2 (Liveness)** | Direct Syscall + Adaptive Thresholding | Detects suspension; triggers **Silent Poisoning** instead of exit [+] |
+| **Entangled Execution** | RIP Anchoring + Thread Cycle Heartbeat | Binds VM key to code location and timing; anti-DBI/anti-trace [+] |
 | **Randomized TinyVM** | Indirect Threading + Randomized V-Table | No switch/match; Helper addresses shuffled at runtime |
 | **Distributed Scoring** | 128-shard atomic scoring (Active/Decoy) | Memory manipulation is self-detecting; massive entropy dilution |
 | **Silent Corruption** | Token-based key poisoning | No crashes; just silently wrong results |
-| **Continuous Sharding** | sharded integrity + VM entanglement | PE modifications naturally break VM execution loop ✨ |
+| **Continuous Sharding** | sharded integrity + VM entanglement | PE modifications naturally break VM execution loop [+] |
 | **Surgical Anti-Dump** | Selective PE Header Corruption | Bypasses EDR hooks; wipes NT headers but keeps DOS for stability |
 
 ## Quick Start
@@ -117,18 +119,18 @@ let payment = protector.run_coupled(|token| {
 
 Comprehensive documentation is available in the `/docs` directory:
 
-### 📖 [Advanced Integration Guide](docs/implementation_guide_NEW.md)
+### [DOC] [Advanced Integration Guide](docs/implementation_guide_NEW.md)
 Overview, integration checklist, threat model, and FAQ. **Start here if new to fdebug.**
 
-### 🏗️ [Architecture Guide](docs/architecture_guide_NEW.md)
+### [ARCH] [Architecture Guide](docs/architecture_guide_NEW.md)
 Deep technical analysis of all **five protection layers**:
-- **Layer 1**: Seed Orchestrator & Entropy Reconstruction ✨ **NEW**
+- **Layer 1**: Seed Orchestrator & Entropy Reconstruction [NEW]
 - **Layer 2**: Multi-Vector Detection System
 - **Layer 3**: Polymorphic Virtual Execution (TinyVM)
 - **Layer 4**: Distributed Suspicion Scoring & Integrity
 - **Layer 5**: Decoy System (Honey Pot Pattern)
 
-### 🔐 [Layer 1: Seed Orchestrator (Foundation)](docs/ARCHITECTURE_LAYER5.md) ✨ **NEW**
+### [SEC] [Layer 1: Seed Orchestrator (Foundation)](docs/ARCHITECTURE_LAYER5.md) [NEW]
 Detailed explanation of runtime seed reconstruction:
 - Three entropy shards (Build-Time, Hardware, PE Integrity)
 - Avalanche mixing and XOR composition
@@ -136,7 +138,7 @@ Detailed explanation of runtime seed reconstruction:
 - Performance characteristics (50-100μs first call, then cached)
 - Defense against static analysis and memory attacks
 
-### 📚 [API Reference Guide](docs/reference_guide_NEW.md)
+### [API] [API Reference Guide](docs/reference_guide_NEW.md)
 Complete API documentation with code examples:
 - Quick Start (updated with `get_dynamic_seed()`)
 - Core API Reference
@@ -146,7 +148,7 @@ Complete API documentation with code examples:
 - Performance Characteristics
 - FAQ and Troubleshooting
 
-### 🛠️ [Implementation Guide](docs/implementation_guide_NEW.md)
+### [IMPL] [Implementation Guide](docs/implementation_guide_NEW.md)
 Best practices and design patterns:
 - Architectural Design Patterns (Shield, Sentinel, Checksum)
 - Integration Strategies
@@ -156,7 +158,7 @@ Best practices and design patterns:
 - Security Considerations
 - Troubleshooting Guide
 
-### � [Build Guide - Custom Entropy Setup](docs/BUILD_GUIDE.md) ✨ **NEW**
+### [BUILD] [Build Guide - Custom Entropy Setup](docs/BUILD_GUIDE.md) [NEW]
 Complete guide for developers customizing the build system:
 - Understanding fdebug's three-shard entropy system
 - How `build.rs` generates Shard 1 (Build-Time Seed)
@@ -165,14 +167,14 @@ Complete guide for developers customizing the build system:
 - Best practices and troubleshooting
 - Real-world code examples with detailed comments
 
-### �📋 [Documentation Updates Summary](docs/DOCUMENTATION_UPDATE_SUMMARY.md) ✨ **NEW**
+### [LOG] [Documentation Updates Summary](docs/DOCUMENTATION_UPDATE_SUMMARY.md) [NEW]
 Complete changelog of recent updates:
 - Summary of Seed Orchestrator changes
 - Before/after code examples
 - All updated files and modifications
 - Integration points explained
 
-### 📝 [Updates & Change Guide](docs/UPDATES.md) ✨ **NEW**
+### [UPD] [Updates & Change Guide](docs/UPDATES.md) [NEW]
 Detailed technical guide for developers:
 - Code changes explained
 - Module structure
@@ -208,7 +210,7 @@ Protection Layer
 
 ## How It Works
 
-### Layer 1: Seed Orchestrator (Foundation) ✨ **NEW**
+### Layer 1: Seed Orchestrator (Foundation) [NEW]
 
 **Runtime seed reconstruction from three entropy sources:**
 
@@ -237,11 +239,14 @@ Protection Layer
 
 ### Layer 3: Obfuscation (Polymorphic VM)
 
-- Custom bytecode VM with stack-based architecture
+- Custom bytecode VM with stack-based architecture using indirect threading
+- **Entangled Execution**: The VM loop is now "entangled" with the environment:
+  - **RIP Entanglement**: Binds the decryption key to the physical entry address. If code is relocated (typical of DBI tools), the key becomes invalid.
+  - **Thread Cycle Heartbeat**: Detects excessive CPU cycle consumption via `QueryThreadCycleTime`. Tracing or single-stepping triggers silent key corruption.
 - Control flow flattening converts sequential code into opaque state machines
 - Opcodes change every build (polymorphic - different per binary)
 - Derived from runtime-reconstructed seed via `auto_op!()` macro
-- Even with source code, each user gets unique protection
+- Zero external dependencies (No `winapi`/`windows-rs`); uses manual FFI and inline assembly
 - Analysis tools (IDA, Ghidra) produce unusable output
 
 ### Layer 4: Integrity (Distributed Scoring)
@@ -274,7 +279,7 @@ Optimizable: protect only critical operations, batch processes, etc.
 
 ## Threat Model
 
-### ✅ Defends Against
+### [+] Defends Against
 
 - Software debuggers (WinDbg, x64dbg, IDA Debugger)
 - Automated analysis (IDA Pro, Ghidra, Binary Ninja)
@@ -284,7 +289,7 @@ Optimizable: protect only critical operations, batch processes, etc.
 - Single-stepping attacks
 - DLL injection attempts
 
-### ⚠️ Limitations
+### [-] Limitations
 
 - Kernel-mode debuggers have lower-level access
 - Hypervisor escapes may bypass some checks
@@ -368,7 +373,7 @@ RUST_LOG=debug cargo run --release
 ```
 src/protector/
 ├── mod.rs                    # Main API & integration layer
-├── seed_orchestrator.rs      # Runtime seed reconstruction ✨ NEW
+├── seed_orchestrator.rs      # Runtime seed reconstruction [NEW]
 ├── hardware_entropy.rs       # Hardware fingerprint (Windows)
 ├── pe_integrity.rs           # PE code section hash (Windows)
 ├── anti_debug.rs             # Multi-vector detection (2300+ lines)
@@ -395,7 +400,7 @@ windows = { version = "0.51", features = [...] }
 
 ## Security Notes
 
-⚠️ **Important Security Considerations:**
+[!] **Important Security Considerations:**
 
 1. **No static secrets** - Runtime seed reconstruction means no hardcoded keys to find
 2. **Seed is hardware and build-specific** - `get_dynamic_seed()` changes based on CPU and code
@@ -407,12 +412,12 @@ windows = { version = "0.51", features = [...] }
 ## Performance Tips
 
 ```rust
-// ✅ GOOD - Single run_secure wrapping batch operation
+// [OK] GOOD - Single run_secure wrapping batch operation
 protector.run_secure(&vault, |data, token| {
     data.iter().map(|x| process(x, token)).collect()
 })
 
-// ❌ POOR - Separate run_secure per item
+// [!] POOR - Separate run_secure per item
 for item in data {
     protector.run_secure(&vault, |_, token| process(item, token))
 }
@@ -469,15 +474,15 @@ Not suitable for:
 
 | I want to... | Go to |
 | --- | --- |
-| **Learn about latest updates** | [📋 Documentation Updates Summary](docs/DOCUMENTATION_UPDATE_SUMMARY.md) ✨ |
-| **Understand Seed Orchestrator** | [🔐 Seed Orchestrator Layer 5](docs/ARCHITECTURE_LAYER5.md) ✨ |
-| **Customize the build system** | [🔨 Build Guide - Custom Entropy](docs/BUILD_GUIDE.md) ✨ |
-| **Understand how fdebug works** | [🏗️ Full Architecture Guide](docs/architecture_guide_NEW.md) |
-| **Use fdebug in my project** | [📖 Complete Integration Guide](docs/FDEBUG_COMPLETE_GUIDE.md) |
-| **See all API functions** | [📚 API Reference](docs/reference_guide_NEW.md) |
-| **Learn best practices** | [🛠️ Implementation Guide](docs/implementation_guide_NEW.md) |
+| **Learn about latest updates** | [LOG] [Documentation Updates Summary](docs/DOCUMENTATION_UPDATE_SUMMARY.md) |
+| **Understand Seed Orchestrator** | [SEC] [Layer 1: Seed Orchestrator (Foundation)](docs/ARCHITECTURE_LAYER5.md) |
+| **Customize the build system** | [BUILD] [Build Guide - Custom Entropy Setup](docs/BUILD_GUIDE.md) |
+| **Understand how fdebug works** | [ARCH] [Full Architecture Guide](docs/architecture_guide_NEW.md) |
+| **Use fdebug in my project** | [DOC] [Complete Integration Guide](docs/FDEBUG_COMPLETE_GUIDE.md) |
+| **See all API functions** | [API] [API Reference Guide](docs/reference_guide_NEW.md) |
+| **Learn best practices** | [IMPL] [Implementation Guide](docs/implementation_guide_NEW.md) |
 | **See working code** | [examples/](examples/) directory |
-| **Deploy to production** | [📖 Integration Guide - Deployment](docs/FDEBUG_COMPLETE_GUIDE.md#deployment-considerations) |
+| **Deploy to production** | [DOC] [Integration Guide - Deployment](docs/FDEBUG_COMPLETE_GUIDE.md#deployment-considerations) |
 
 ---
 
@@ -485,12 +490,12 @@ Not suitable for:
 
 **New to fdebug?** Read in this order:
 
-1. [📖 Complete Integration Guide](docs/FDEBUG_COMPLETE_GUIDE.md) - 10 min overview
-2. [🔐 Seed Orchestrator Layer](docs/ARCHITECTURE_LAYER5.md) - Understand the foundation ✨
-3. [🏗️ Architecture Guide](docs/architecture_guide_NEW.md) - Deep technical analysis
+1. [DOC] [Complete Integration Guide](docs/FDEBUG_COMPLETE_GUIDE.md) - 10 min overview
+2. [SEC] [Layer 1: Seed Orchestrator (Foundation)](docs/ARCHITECTURE_LAYER5.md) - Understand the foundation
+3. [ARCH] [Architecture Guide](docs/architecture_guide_NEW.md) - Deep technical analysis
 4. [examples/](examples/) - See working code
-5. [🛠️ Implementation Guide](docs/implementation_guide_NEW.md) - Best practices
+5. [IMPL] [Implementation Guide](docs/implementation_guide_NEW.md) - Best practices
 
 ---
 
-**Latest Update**: Runtime seed reconstruction from three entropy sources (Build-Time, Hardware, PE Integrity). See [🔐 Layer 5](docs/ARCHITECTURE_LAYER5.md) for details.
+**Latest Update**: Runtime seed reconstruction from three entropy sources (Build-Time, Hardware, PE Integrity). See [SEC] [Layer 5](docs/ARCHITECTURE_LAYER5.md) for details.
