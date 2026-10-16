@@ -1,0 +1,51 @@
+[package]
+name = "verification_suite"
+version = "0.1.0"
+edition = "2021"
+description = "Adversarial property-based testing and formal verification suite for fuckDebug"
+publish = false
+
+[workspace]
+members = ["."]
+
+[dependencies]
+fuckDebug = { path = ".." }
+bolero = { version = "0.13.7", features = ["arbitrary"] }
+arbitrary = { version = "1.3", features = ["derive"] }
+verus_builtin = "0.0.0-2026-10-11-0230"
+verus_builtin_macros = "0.0.0-2026-09-20-0158"
+
+windows = { version = "0.51", features = [
+    "Win32_Foundation",
+    "Win32_System_Memory",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_ProcessStatus",
+    "Win32_Storage_FileSystem",
+    "Win32_System_LibraryLoader",
+    "Win32_Security",
+    "Win32_System_Kernel",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+] }
+
+lazy_static = "1.4"
+
+[lib]
+name = "verification_suite"
+path = "src/lib.rs"
+
+[[bin]]
+name = "verification_suite"
+path = "src/main.rs"
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.test]
+opt-level = 0
+debug = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verus_keep_ghost)'] }
+
