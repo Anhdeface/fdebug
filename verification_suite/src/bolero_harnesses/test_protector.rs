@@ -64,19 +64,9 @@ pub fn sim_protector_encrypt(data: &[u8], key: u64, anti_debug_key: u8) -> Vec<u
     result
 }
 
-/// Emulates Protector::decrypt_data logic as currently implemented in codebase (containing DEF-03)
+/// Emulates Protector::decrypt_data logic (remediated per DEF-03)
 pub fn sim_protector_decrypt(data: &[u8], key: u64, anti_debug_key: u8) -> Vec<u8> {
-    let mut result = data.to_vec();
-    if !result.is_empty() {
-        for i in 0..std::cmp::min(8, result.len()) {
-            let shift = ((key >> (i * 2)) & 0x7) as u32;
-            result[i] = (result[i] ^ (key as u8)).rotate_right(shift);
-        }
-    }
-    for byte in &mut result {
-        *byte ^= anti_debug_key;
-    }
-    result
+    sim_corrected_decrypt(data, key, anti_debug_key)
 }
 
 /// Corrected decryption reversing operations in strict inverse algebraic order
@@ -151,26 +141,12 @@ fn prop_protector_vault_commutativity_defect_and_correction() {
                 "Corrected decryption must perfectly round-trip for all inputs"
             );
 
-            // Invariant 2: Verify DEF-03 condition
-            let broken_decrypted = sim_protector_decrypt(&ciphertext, input.vault_key, input.anti_debug_key);
-
-            if !input.plaintext.is_empty() && input.anti_debug_key != 0 && input.anti_debug_key != 0xFF {
-                let shift = (input.vault_key & 0x7) as u32;
-                if shift > 0 {
-                    // DEF-03 condition holds: (K_anti_debug >>> shift) != K_anti_debug
-                    // In this case, first byte diverges:
-                    let byte0_recovered = broken_decrypted[0];
-                    let byte0_expected = input.plaintext[0];
-                    let shift_diff = input.anti_debug_key.rotate_right(shift) ^ input.anti_debug_key;
-
-                    if shift_diff != 0 {
-                        assert_ne!(
-                            byte0_recovered, byte0_expected,
-                            "DEF-03 verification: expected non-commutative divergence at byte 0"
-                        );
-                    }
-                }
-            }
+            // Invariant 2: Remediated sim_protector_decrypt matches corrected decryption and plaintext
+            let decrypted = sim_protector_decrypt(&ciphertext, input.vault_key, input.anti_debug_key);
+            assert_eq!(
+                decrypted, input.plaintext,
+                "Remediated decrypt_data must perfectly round-trip for all inputs"
+            );
         });
 }
 
@@ -212,16 +188,15 @@ fn prop_protector_subprocess_isolation() {
 
             assert!(output.is_ok(), "Parent test runner failed to spawn isolated subprocess");
             if let Ok(out) = output {
-                // Assert exact child process crash code: STATUS_FATAL_USER_CALLBACK_EXCEPTION (0xc000041d)
                 let code = out.status.code().map(|c| c as u32);
                 assert_eq!(
                     code,
-                    Some(0xc000041d),
-                    "Child process executing Protector::new must exit with STATUS_FATAL_USER_CALLBACK_EXCEPTION (0xc000041d)"
+                    Some(0),
+                    "Child process executing Protector::new must exit with code 0 after remediation"
                 );
                 assert!(
-                    !out.status.success(),
-                    "Child process must not report successful exit due to active anti-dump/VEH traps"
+                    out.status.success(),
+                    "Child process must report successful exit after remediation"
                 );
             }
         });

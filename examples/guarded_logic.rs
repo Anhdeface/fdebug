@@ -1,4 +1,4 @@
-use fdebug::protector::{setup_anti_debug, CoupledLogic, Corruptible};
+use fuckDebug::protector::{setup_anti_debug, CoupledLogic, Corruptible};
 
 struct FinancialReport {
     revenue: f64,

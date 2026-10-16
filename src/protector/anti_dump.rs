@@ -192,22 +192,18 @@ unsafe fn indirect_nt_protect_virtual_memory(
     // - All pointers passed are valid local variables or arguments.
     unsafe {
         std::arch::asm!(
-            "mov r10, {h_process}", // Param 1
-            "mov rdx, {p_base}",    // Param 2
-            "mov r8, {p_size}",     // Param 3
-            "mov r9d, {protect:e}", // Param 4
-            "mov eax, {ssn:e}",     // SSN
-            "sub rsp, 0x28",        // Shadow space (0x20) + alignment/padding (0x8)
-            "mov r11, {p_old}",     // Get param 5
-            "mov [rsp+0x20], r11",  // Place param 5 at [RSP + 32]
-            "syscall",              // DIRECT HARDWARE SYSCALL
-            "add rsp, 0x28",        // Cleanup
-            h_process = in(reg) process_handle,
-            p_base = in(reg) base_address,
-            p_size = in(reg) number_of_bytes_to_protect,
-            protect = in(reg) new_access_protection,
+            "sub rsp, 0x28",
+            "mov [rsp+0x20], {p_old}",
+            "mov [rsp+0x28], {p_old}",
+            "call {target_gadget}",
+            "add rsp, 0x28",
+            in("r10") process_handle,
+            in("rdx") base_address,
+            in("r8") number_of_bytes_to_protect,
+            in("r9") new_access_protection as usize,
+            in("eax") ssn,
             p_old = in(reg) old_access_protection,
-            ssn = in(reg) ssn,
+            target_gadget = in(reg) j_addr,
             lateout("rax") status,
             clobber_abi("system")
         );
@@ -294,15 +290,12 @@ unsafe fn erase_critical_headers(base: *mut u8) {
     let nt = (base as usize + nt_offset) as *mut IMAGE_NT_HEADERS64;
     let mut old = 0u32;
     
-    // Protect only 512 bytes to avoid page boundary issues if header is at the end of a page
-    if protected_virtual_protect(nt as *mut _, 512, PAGE_READWRITE, &mut old) {
-        // Zero vital fields to brick reconstruction tools
-        // SAFETY: Volatile writes required because these are raw pointers to PE headers
-        // WEAPONIZATION: Use random entropy instead of zeros to break pattern matching scanners.
+    let prot_res = protected_virtual_protect(nt as *mut _, 512, PAGE_READWRITE, &mut old);
+    if prot_res {
         let entropy = get_kuser_shared_entropy();
         
         // 1. Corrupt NT Signature (PE\0\0) -> Bricks strict PE parsers
-        // NOTE: We preserve DOS Header (e_magic) for basic system stability.
+        // NOTE: We preserve DOS Header (e_magic) and section headers (.pdata unwind) for system stability.
         ptr::write_volatile(&mut (*nt).Signature, (entropy & 0xFFFFFFFF) as u32);
 
         // 2. Corrupt AddressOfEntryPoint -> Bricks execution flow analysis
@@ -311,19 +304,6 @@ unsafe fn erase_critical_headers(base: *mut u8) {
         // 3. Corrupt SizeOfImage -> Bricks memory dumping tools (incorrect size calc)
         // Set to a random large value to confuse dumpers
         ptr::write_volatile(&mut (*nt).OptionalHeader.SizeOfImage, ((entropy >> 7) & 0xFFFFFF) as u32);
-        
-        // Wipe Section Headers with entropy
-        let file_hdr_size = std::mem::size_of::<IMAGE_FILE_HEADER>();
-        let opt_hdr_size = (*nt).FileHeader.SizeOfOptionalHeader as usize;
-        
-        let section_hdr = (nt as usize + 4 + file_hdr_size + opt_hdr_size) as *mut u8;
-        for i in 0..(*nt).FileHeader.NumberOfSections as usize {
-             // Overwrite 8 bytes of Name + VirtualSize with random entropy
-             // This effectively destroys the section table mapping
-             let section_entropy = get_kuser_shared_entropy().wrapping_add(i as u64);
-             std::ptr::write_volatile(section_hdr.add(i * 40) as *mut u64, section_entropy);
-             std::ptr::write_volatile(section_hdr.add(i * 40 + 8) as *mut u32, (section_entropy >> 32) as u32);
-        }
         
         protected_virtual_protect(nt as *mut _, 512, PAGE_READONLY, &mut old);
     }
@@ -357,19 +337,12 @@ pub fn init_anti_dump() -> bool {
             return false; 
         }
         
-        // 1. Resolve Indirect Syscalls for all future stealth ops
         if !resolve_indirect_syscalls() {
             crate::protector::global_state::add_suspicion(crate::protector::global_state::DetectionSeverity::Medium);
         }
         
         let _ = resolve_exit_syscall();
-        
-        // 2. Register Global Production VEH -> REMOVED (Handled by enhanced_veh::init_master_veh)
-        
-        // 3. Deploy Passive Honeytraps (Decoy Pages)
         spawn_decoy_traps();
-        
-        // 4. Surgical PE Header Erasure
         erase_critical_headers(base);
     }
     
@@ -380,16 +353,18 @@ pub fn init_anti_dump() -> bool {
 /// Called by Master VEH (enhanced_veh.rs).
 /// Returns true if a Honeytrap was hit.
 pub unsafe fn handle_guard_page_violation(ptrs: *mut EXCEPTION_POINTERS) -> bool {
+    if ptrs.is_null() {
+        return false;
+    }
     let record = (*ptrs).ExceptionRecord;
-    if (*record).ExceptionCode == STATUS_GUARD_PAGE_VIOLATION {
-        let fault_addr = (*record).ExceptionAddress as usize;
+    if !record.is_null() && (*record).ExceptionCode == STATUS_GUARD_PAGE_VIOLATION {
+        // In STATUS_GUARD_PAGE_VIOLATION, ExceptionInformation[1] is the accessed virtual address
+        let fault_addr = (*record).ExceptionInformation[1] as usize;
         let decoys = DECOY_REGIONS.lock().unwrap();
         
         for &(base, size) in decoys.iter() {
             if fault_addr >= base && fault_addr < base + size {
                 // HONEYPOT HIT: Dumper or Scanner detected.
-                // Strict logic: Only check and return detection status.
-                // Side effects (hang/loop) are handled by the caller (Master VEH) via exception continuation.
                 return true;
             }
         }

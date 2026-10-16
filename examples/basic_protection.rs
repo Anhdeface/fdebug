@@ -1,4 +1,4 @@
-use fdebug::protector::setup_anti_debug;
+use fuckDebug::protector::setup_anti_debug;
 
 fn main() {
     // 1. Khởi tạo protector với seed (thường lấy từ build-time entropy)
@@ -19,6 +19,6 @@ fn main() {
     do_important_work(&protector);
 }
 
-fn do_important_work(_protector: &fdebug::protector::Protector) {
+fn do_important_work(_protector: &fuckDebug::protector::Protector) {
     println!("Đang thực hiện các tác vụ nhạy cảm...");
 }

@@ -17,7 +17,7 @@ use std::sync::atomic::Ordering;
 #[cfg(target_os = "windows")]
 mod hardware_entropy;
 #[cfg(target_os = "windows")]
-mod pe_integrity;
+pub mod pe_integrity;
 
 pub mod seed_orchestrator;
 
@@ -49,14 +49,14 @@ pub fn init_protector() {
     static INIT: Once = Once::new();
 
     INIT.call_once(|| {
-        // 1. Initialize PE Integrity (Get .text bounds)
-        crate::protector::pe_integrity::get_text_section_bounds();
+        // 1. Force full calculation of PE integrity hash and cache SHARD_TABLE
+        crate::protector::pe_integrity::heartbeat_check(0);
 
-        // 2. Initialize Anti-Dump (Traps, but NO VEH registration)
-        crate::protector::anti_dump::init_anti_dump();
-
-        // 3. Initialize Master VEH (Register the single handler)
+        // 2. Initialize Master VEH FIRST before arming decoy traps
         enhanced_veh::init_master_veh();
+
+        // 3. Initialize Anti-Dump (Deploy Traps and Surgical Header Obfuscation)
+        crate::protector::anti_dump::init_anti_dump();
     });
 }
 
@@ -217,14 +217,14 @@ impl Protector {
     pub fn decrypt_data(&self, ciphertext: &[u8]) -> Vec<u8> {
         // Enforce secure execution for decryption
         self.run_secure(&SecureVault::new(ciphertext.to_vec()), |data, key| {
-            let mut result = data.clone();
+            let mut result = anti_debug::decrypt_data(data);
             if !result.is_empty() {
                 for i in 0..std::cmp::min(8, result.len()) {
                     let shift = ((key >> (i * 2)) & 0x7) as u32;
                     result[i] = (result[i] ^ (key as u8)).rotate_right(shift);
                 }
             }
-            anti_debug::decrypt_data(&result)
+            result
         })
     }
 

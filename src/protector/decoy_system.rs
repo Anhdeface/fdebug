@@ -214,13 +214,18 @@ fn is_function_patched(ptr: *const u8) -> bool {
             }
         }
 
-        // Additional check: if the first few bytes are all NOPs, it's likely patched
+        // Additional check: if the first few bytes are all NOPs or NOP+RET, it's patched
         let first_byte = std::ptr::read_volatile(ptr);
         let second_byte = std::ptr::read_volatile(ptr.add(1));
         let third_byte = std::ptr::read_volatile(ptr.add(2));
 
-        // If it starts with multiple NOPs followed by RET, it's definitely patched
-        if first_byte == 0x90 && second_byte == 0x90 && third_byte == 0x90 {
+        // Detect [0x90, 0xC3] (NOP + RET hook)
+        if first_byte == 0x90 && second_byte == 0xC3 {
+            return true;
+        }
+
+        // If it starts with multiple NOPs followed by RET or NOP sled, it's definitely patched
+        if first_byte == 0x90 && second_byte == 0x90 && (third_byte == 0x90 || third_byte == 0xC3) {
             return true;
         }
     }

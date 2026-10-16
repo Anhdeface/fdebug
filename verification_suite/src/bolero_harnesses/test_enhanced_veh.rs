@@ -61,38 +61,47 @@ pub fn ref_drx_integrity_spec(dr7: u64, dr0: u64, vm_key: u64) -> bool {
     (dr7 == 0) || (dr0 == expected)
 }
 
-/// Executes TinyVM bytecode compiled identically to enhanced_veh.rs:284-314
+/// Executes TinyVM bytecode compiled identically to remediated enhanced_veh.rs
 pub fn execute_drx_tinyvm_oracle(dr7: u64, dr0: u64, vm_key: u64) -> bool {
     let expected = vm_key.wrapping_mul(0x13371337);
-    let mut bc = [0u8; 128];
-    let mut idx = 0;
+    let mut plain_bc = Vec::new();
     let k = 0x55u8;
 
     // 1. Check Dr7 == 0
-    bc[idx] = VmOp::op_load_imm() ^ k; idx += 1;
-    for b in dr7.to_le_bytes() { bc[idx] = b ^ k; idx += 1; }
-
-    bc[idx] = VmOp::op_load_imm() ^ k; idx += 1;
-    for _ in 0..8 { bc[idx] = 0 ^ k; idx += 1; }
-
-    bc[idx] = VmOp::op_cmp_eq() ^ k; idx += 1; // Acc = (Dr7 == 0)
-    bc[idx] = VmOp::op_push() ^ k; idx += 1;   // Push Acc (Result 1)
+    plain_bc.push(VmOp::op_load_imm());
+    plain_bc.extend_from_slice(&dr7.to_le_bytes());
+    plain_bc.push(VmOp::op_load_imm());
+    plain_bc.extend_from_slice(&0u64.to_le_bytes());
+    plain_bc.push(VmOp::op_cmp_eq()); // Pushes boolean result to stack (NO op_push)
 
     // 2. Check Dr0 == Expected
-    bc[idx] = VmOp::op_load_imm() ^ k; idx += 1;
-    for b in dr0.to_le_bytes() { bc[idx] = b ^ k; idx += 1; }
+    plain_bc.push(VmOp::op_load_imm());
+    plain_bc.extend_from_slice(&dr0.to_le_bytes());
+    plain_bc.push(VmOp::op_load_imm());
+    plain_bc.extend_from_slice(&expected.to_le_bytes());
+    plain_bc.push(VmOp::op_cmp_eq()); // Pushes boolean result to stack (NO op_push)
 
-    bc[idx] = VmOp::op_load_imm() ^ k; idx += 1;
-    for b in expected.to_le_bytes() { bc[idx] = b ^ k; idx += 1; }
+    // 3. OR results and exit
+    plain_bc.push(VmOp::op_or());
+    plain_bc.push(VmOp::op_exit());
 
-    bc[idx] = VmOp::op_cmp_eq() ^ k; idx += 1; // Acc = (Dr0 == Expected)
-    bc[idx] = VmOp::op_push() ^ k; idx += 1;   // Push Acc (Result 2)
+    // 4. Encode using authentic rolling-key recurrence, position salt, and integrity token
+    let mut encoded = Vec::with_capacity(plain_bc.len());
+    let mut state_key: u8 = 0;
+    let integrity_val = crate::protector::pe_integrity::INTEGRITY_TOKEN.load(std::sync::atomic::Ordering::Relaxed) as u8;
+    let global_entropy = crate::protector::global_state::GLOBAL_VIRTUAL_MACHINE_KEY.load(std::sync::atomic::Ordering::Relaxed);
 
-    // 3. OR results
-    bc[idx] = VmOp::op_or() ^ k; idx += 1;     // Acc = Res1 | Res2
-    bc[idx] = VmOp::op_exit() ^ k; idx += 1;
+    for (vip, &plain) in plain_bc.iter().enumerate() {
+        let pos_salt = (vip as u8).wrapping_mul(0x7);
+        let raw_byte = plain.wrapping_sub(pos_salt) ^ k ^ state_key ^ integrity_val;
+        encoded.push(raw_byte);
 
-    let result = vm_execute(&bc[..idx], k, 0);
+        state_key = state_key.wrapping_add(raw_byte).wrapping_mul(0x1F);
+        state_key ^= state_key.rotate_right(3) ^ 0x3C;
+        state_key ^= global_entropy;
+    }
+
+    let result = vm_execute(&encoded, k, 0);
     result != 0
 }
 

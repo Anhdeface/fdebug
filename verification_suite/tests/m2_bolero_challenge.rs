@@ -530,7 +530,7 @@ fn test_challenge_guard_page_boundary_inclusion() {
 pub fn encode_tinyvm_bytecode(plain_bytes: &[u8], encryption_key: u8) -> Vec<u8> {
     let mut encoded = Vec::with_capacity(plain_bytes.len());
     let mut state_key: u8 = 0;
-    let integrity_val = verification_suite::shims::pe_integrity_shim::INTEGRITY_TOKEN.load(Ordering::Relaxed) as u8;
+    let integrity_val = verification_suite::protector::pe_integrity::INTEGRITY_TOKEN.load(Ordering::Relaxed) as u8;
     let global_entropy = verification_suite::protector::global_state::GLOBAL_VIRTUAL_MACHINE_KEY.load(Ordering::Relaxed);
 
     for (vip, &plain) in plain_bytes.iter().enumerate() {
@@ -584,33 +584,31 @@ fn test_challenge_drx_tinyvm_defect_def04_and_vacuous_pass() {
     let vm_key = 0x5A5A_1234_BEEFu64;
     let expected = vm_key.wrapping_mul(0x13371337);
 
-    // DEF-04 Proof:
-    // In src/protector/enhanced_veh.rs:284-314:
-    // 1. Bytecode has spurious `op_push()` after `op_cmp_eq()` eating the next opcode.
-    // 2. Bytecode was encoded via naive `^ k` instead of the required rolling key cipher!
-    // As a result, execute_drx_tinyvm_oracle ALWAYS returns false!
+    // DEF-04 Remediated:
+    // With spurious op_push removed and rolling-key cipher encoded properly,
+    // execute_drx_tinyvm_oracle correctly evaluates DRx integrity:
     let r1 = execute_drx_tinyvm_oracle(0, 0, vm_key);
     let r2 = execute_drx_tinyvm_oracle(0, 0x1234, vm_key);
     let r3 = execute_drx_tinyvm_oracle(0x100, expected, vm_key);
     let r4 = execute_drx_tinyvm_oracle(0x100, 0x9999, vm_key);
 
-    assert!(!r1, "execute_drx_tinyvm_oracle returned false for clean dr7=0");
-    assert!(!r2, "execute_drx_tinyvm_oracle returned false for clean dr7=0");
-    assert!(!r3, "execute_drx_tinyvm_oracle returned false even when dr0 == expected");
-    assert!(!r4, "execute_drx_tinyvm_oracle returned false");
+    assert!(r1, "execute_drx_tinyvm_oracle must return true for clean dr7=0");
+    assert!(r2, "execute_drx_tinyvm_oracle must return true for clean dr7=0");
+    assert!(r3, "execute_drx_tinyvm_oracle must return true when dr0 == expected");
+    assert!(!r4, "execute_drx_tinyvm_oracle must return false when dr7!=0 and dr0!=expected");
 
-    // Empirical Verification of Vacuous Passing:
-    // For arbitrary u64, dr7 == 0 has probability 2^-64 and dr0 == expected has probability 2^-64.
-    // Therefore ref_drx_integrity_spec returns false with probability (1 - 2^-64)^2 ~ 100%.
-    // Because execute_drx_tinyvm_oracle always returns false due to DEF-04,
-    // the Bolero harness prop_enhanced_veh_drx_tinyvm_equivalence passed 235k iterations on (false == false)!
+    assert_eq!(r1, ref_drx_integrity_spec(0, 0, vm_key));
+    assert_eq!(r2, ref_drx_integrity_spec(0, 0x1234, vm_key));
+    assert_eq!(r3, ref_drx_integrity_spec(0x100, expected, vm_key));
+    assert_eq!(r4, ref_drx_integrity_spec(0x100, 0x9999, vm_key));
+
     let arbitrary_dr7 = 0x1234_5678_9ABC_DEF0u64;
     let arbitrary_dr0 = 0x0FED_CBA9_8765_4321u64;
     let spec = ref_drx_integrity_spec(arbitrary_dr7, arbitrary_dr0, vm_key);
     let oracle = execute_drx_tinyvm_oracle(arbitrary_dr7, arbitrary_dr0, vm_key);
     assert_eq!(spec, false);
     assert_eq!(oracle, false);
-    assert_eq!(spec, oracle, "Demonstrating the false == false vacuous pass");
+    assert_eq!(spec, oracle);
 }
 
 #[test]
@@ -646,18 +644,13 @@ fn test_challenge_prologue_scanner_soundness_and_defects() {
         assert!(ref_is_function_patched(&p_int3));
     }
 
-    // 4. Defect Investigation:
-    // Notice that is_function_patched only checks 0xC3 at index 0.
-    // If a patch is placed as [0x90, 0xC3, 0x00], does it detect it?
+    // 4. Hook Detection:
+    // With [0x90, 0xC3] scanner blindspot resolved, NOP + RET hook is accurately detected:
     let mut p_nop_ret = [0u8; 16];
     p_nop_ret[0] = 0x90;
     p_nop_ret[1] = 0xC3;
     let detected = ref_is_function_patched(&p_nop_ret);
-    // Empirical verification: [0x90, 0xC3] is NOT detected because:
-    // - index 0 is 0x90 (not 0xC3)
-    // - index 1 is 0xC3, but 0xC3 is only checked when i == 0!
-    // - NOP sled requires 3 NOPs, but here only 1 NOP.
-    assert!(!detected, "Empirical observation: NOP + RET patch evades prologue scanner");
+    assert!(detected, "NOP + RET patch [0x90, 0xC3] must be accurately detected");
 }
 
 #[test]
@@ -715,19 +708,11 @@ fn test_challenge_vault_commutativity_defect_mathematical_proof() {
     let correct = sim_corrected_decrypt(&ciphertext, vault_key, anti_debug_key);
     assert_eq!(correct, plaintext, "Corrected decryption must restore original plaintext");
 
-    // 2. DEF-03: Codebase decryption diverges
-    let broken = sim_protector_decrypt(&ciphertext, vault_key, anti_debug_key);
-    assert_ne!(
-        broken, plaintext,
-        "DEF-03: Codebase decrypt_data incorrectly diverged from original plaintext due to non-commutative operations"
-    );
-
-    // Byte 0 exact algebraic divergence:
-    let shift = (vault_key & 7) as u32;
-    let expected_byte0_broken = plaintext[0] ^ anti_debug_key.rotate_right(shift) ^ anti_debug_key;
+    // 2. DEF-03 Remediated: Codebase decryption now restores plaintext perfectly
+    let decrypted = sim_protector_decrypt(&ciphertext, vault_key, anti_debug_key);
     assert_eq!(
-        broken[0], expected_byte0_broken,
-        "Broken byte 0 matches predicted algebraic error formula exactly"
+        decrypted, plaintext,
+        "DEF-03: Remediated decrypt_data restores original plaintext matching mathematical commutativity"
     );
 }
 
@@ -743,15 +728,7 @@ fn test_challenge_protector_new_subprocess_exit_code() {
 
     assert!(output.is_ok(), "Failed to execute child process");
     if let Ok(out) = output {
-        // DEF-01: Child process terminates with STATUS_FATAL_USER_CALLBACK_EXCEPTION (0xc000041d)
-        let code = out.status.code().map(|c| c as u32);
-        // On Windows, 0xc000041d is unsigned 3221226493
-        if let Some(c) = code {
-            assert_eq!(
-                c, 0xc000041d,
-                "DEF-01: Expected child process termination with 0xc000041d, got {:#X}",
-                c
-            );
-        }
+        assert!(out.status.success(), "Repaired Protector::new must execute cleanly in child process");
+        assert_eq!(out.status.code(), Some(0), "Expected clean exit code 0 from child process");
     }
 }

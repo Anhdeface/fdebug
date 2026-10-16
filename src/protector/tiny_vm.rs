@@ -726,7 +726,7 @@ unsafe fn op_shl(
 ) {
     let shift = vm.pop() as u32;
     let a = vm.pop();
-    vm.push(a << shift);
+    vm.push(a.wrapping_shl(shift));
     fetch_next_instruction(bytecode, state, encryption_key);
 }
 
@@ -736,7 +736,7 @@ unsafe fn op_shr(
 ) {
     let shift = vm.pop() as u32;
     let a = vm.pop();
-    vm.push(a >> shift);
+    vm.push(a.wrapping_shr(shift));
     fetch_next_instruction(bytecode, state, encryption_key);
 }
 

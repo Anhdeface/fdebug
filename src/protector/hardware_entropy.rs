@@ -82,26 +82,81 @@ unsafe fn cpuid_helper(leaf: u32) -> (u32, u32, u32, u32) {
 /// 
 /// **Instruction**: RDTSC returns a 64-bit counter in EDX:EAX
 /// **Anti-Tampering**: XOR with stack address to prevent simple manipulation
+/// Sample serialized, core-stable, and monotonic RDTSC
 #[inline(always)]
-fn fallback_entropy() -> u32 {
+fn sample_serialized_rdtsc() -> u64 {
+    static LAST_TSC: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    // 1. Thread stability: pin thread affinity during sampling to avoid core migration
+    #[cfg(target_os = "windows")]
+    let prev_affinity = unsafe {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetCurrentThread() -> isize;
+            fn SetThreadAffinityMask(hThread: isize, dwThreadAffinityMask: usize) -> usize;
+        }
+        let thread = GetCurrentThread();
+        SetThreadAffinityMask(thread, 1)
+    };
+
+    // 2. Serialization: lfence before and after rdtsc prevents out-of-order execution
     let low: u32;
     let high: u32;
-    
     unsafe {
         asm!(
-            "rdtsc",             // Read Time-Stamp Counter
-            out("eax") low,      // Low 32 bits
-            out("edx") high,     // High 32 bits
+            "lfence",
+            "rdtsc",
+            "lfence",
+            out("eax") low,
+            out("edx") high,
             options(nomem, nostack)
         );
     }
+
+    // Restore thread affinity mask
+    #[cfg(target_os = "windows")]
+    unsafe {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetCurrentThread() -> isize;
+            fn SetThreadAffinityMask(hThread: isize, dwThreadAffinityMask: usize) -> usize;
+        }
+        if prev_affinity != 0 {
+            SetThreadAffinityMask(GetCurrentThread(), prev_affinity);
+        }
+    }
+
+    let current = ((high as u64) << 32) | (low as u64);
+
+    // 3. Monotonic handling: ensure monotonic progression on virtualized platforms
+    let mut prev = LAST_TSC.load(std::sync::atomic::Ordering::Relaxed);
+    loop {
+        let next = if current > prev { current } else { prev.wrapping_add(1) };
+        match LAST_TSC.compare_exchange_weak(
+            prev,
+            next,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::Relaxed,
+        ) {
+            Ok(_) => return next,
+            Err(actual) => prev = actual,
+        }
+    }
+}
+
+/// Fallback entropy source when CPUID is not available or returns invalid data
+#[inline(always)]
+fn fallback_entropy() -> u32 {
+    let tsc = sample_serialized_rdtsc();
+    let low = tsc as u32;
+    let high = (tsc >> 32) as u32;
     
     // XOR the two halves for mixing
     let rdtsc_entropy = low ^ high;
     
-    // Mix with stack pointer for additional entropy
+    // Mix with stack pointer for additional entropy (safe cast through usize)
     let stack_var = 0u8;
-    let stack_ptr = &stack_var as *const u8 as u32;
+    let stack_ptr = (&stack_var as *const u8 as usize) as u32;
     
     rdtsc_entropy ^ stack_ptr
 }

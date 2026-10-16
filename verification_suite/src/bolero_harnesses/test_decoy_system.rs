@@ -35,8 +35,12 @@ pub fn ref_is_function_patched(b: &[u8]) -> bool {
             return true;
         }
     }
-    // Check for NOP sled (0x90, 0x90, 0x90)
-    if b.len() >= 3 && b[0] == 0x90 && b[1] == 0x90 && b[2] == 0x90 {
+    // Detect [0x90, 0xC3] (NOP + RET hook)
+    if b.len() >= 2 && b[0] == 0x90 && b[1] == 0xC3 {
+        return true;
+    }
+    // Check for NOP sled (0x90, 0x90, 0x90 or 0x90, 0x90, 0xC3)
+    if b.len() >= 3 && b[0] == 0x90 && b[1] == 0x90 && (b[2] == 0x90 || b[2] == 0xC3) {
         return true;
     }
     false

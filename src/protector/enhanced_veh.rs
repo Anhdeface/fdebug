@@ -141,12 +141,8 @@ unsafe extern "system" fn master_veh_handler(exception_info: *mut EXCEPTION_POIN
     // Delegate to anti_dump module for Guard Page violations (Decoy Traps)
     
     if crate::protector::anti_dump::handle_guard_page_violation(exception_info) {
-        // If handled (True), it means a Honeytrap was hit.
-        // We probably want to swallow the exception and let the thread hang or loop
-        // to waste attacker time without crashing immediately (Stealth).
-        // Returning CONTINUE_EXECUTION on a Guard Page without fixing it *will* re-trigger it.
-        // This effectively creates an infinite loop trap for the dumper thread. Perfect.
-        return EXCEPTION_CONTINUE_EXECUTION;
+        // Honeypot hit: poison state and redirect instruction pointer away from guarded page
+        return poison_thread_context(context);
     }
 
     // ========================================================================
@@ -278,39 +274,44 @@ unsafe fn verify_drx_integrity(context: &CONTEXT) -> bool {
     // Magic match value: Key * 0x1337
     let expected_heartbeat = vm_key.wrapping_mul(0x13371337); 
     
-    // VM Bytecode construction (Linear logic):
-    // Checks (Dr7 == 0) OR (Dr0 == Expected)
-    
-    let mut bc = [0u8; 128];
-    let mut idx = 0;
-    let k = 0x55; // Simple obfuscation key for bytecode
+    let mut plain_bc = Vec::with_capacity(32);
+    let k = 0x55u8;
     
     // 1. Check Dr7 == 0
-    bc[idx] = VmOp::op_load_imm() ^ k; idx += 1;
-    for b in dr7.to_le_bytes() { bc[idx] = b ^ k; idx += 1; }
-    
-    bc[idx] = VmOp::op_load_imm() ^ k; idx += 1;
-    for _ in 0..8 { bc[idx] = 0 ^ k; idx += 1; }
-    
-    bc[idx] = VmOp::op_cmp_eq() ^ k; idx += 1; // Acc = (Dr7 == 0)
-    bc[idx] = VmOp::op_push() ^ k; idx += 1;   // Push Acc (Result 1)
+    plain_bc.push(VmOp::op_load_imm());
+    plain_bc.extend_from_slice(&dr7.to_le_bytes());
+    plain_bc.push(VmOp::op_load_imm());
+    plain_bc.extend_from_slice(&0u64.to_le_bytes());
+    plain_bc.push(VmOp::op_cmp_eq()); // Pushes boolean result to stack (NO op_push)
     
     // 2. Check Dr0 == Expected
-    bc[idx] = VmOp::op_load_imm() ^ k; idx += 1; 
-    for b in dr0.to_le_bytes() { bc[idx] = b ^ k; idx += 1; }
+    plain_bc.push(VmOp::op_load_imm());
+    plain_bc.extend_from_slice(&dr0.to_le_bytes());
+    plain_bc.push(VmOp::op_load_imm());
+    plain_bc.extend_from_slice(&expected_heartbeat.to_le_bytes());
+    plain_bc.push(VmOp::op_cmp_eq()); // Pushes boolean result to stack (NO op_push)
     
-    bc[idx] = VmOp::op_load_imm() ^ k; idx += 1;
-    for b in expected_heartbeat.to_le_bytes() { bc[idx] = b ^ k; idx += 1; }
+    // 3. OR results and exit
+    plain_bc.push(VmOp::op_or());
+    plain_bc.push(VmOp::op_exit());
     
-    bc[idx] = VmOp::op_cmp_eq() ^ k; idx += 1; // Acc = (Dr0 == Expected)
-    bc[idx] = VmOp::op_push() ^ k; idx += 1;   // Push Acc (Result 2)
+    // 4. Encode using authentic rolling-key recurrence, position salt, and integrity token
+    let mut encoded = Vec::with_capacity(plain_bc.len());
+    let mut state_key: u8 = 0;
+    let integrity_val = crate::protector::pe_integrity::INTEGRITY_TOKEN.load(Ordering::Relaxed) as u8;
+    let global_entropy = crate::protector::global_state::GLOBAL_VIRTUAL_MACHINE_KEY.load(Ordering::Relaxed);
     
-    // 3. OR results
-    bc[idx] = VmOp::op_or() ^ k; idx += 1;     // Acc = Res1 | Res2
+    for (vip, &plain) in plain_bc.iter().enumerate() {
+        let pos_salt = (vip as u8).wrapping_mul(0x7);
+        let raw_byte = plain.wrapping_sub(pos_salt) ^ k ^ state_key ^ integrity_val;
+        encoded.push(raw_byte);
+        
+        state_key = state_key.wrapping_add(raw_byte).wrapping_mul(0x1F);
+        state_key ^= state_key.rotate_right(3) ^ 0x3C;
+        state_key ^= global_entropy;
+    }
     
-    bc[idx] = VmOp::op_exit() ^ k; idx += 1;
-    
-    let result = vm_execute(&bc[..idx], k, 0);
+    let result = vm_execute(&encoded, k, 0);
     result != 0
 }
 

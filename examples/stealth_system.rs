@@ -4,57 +4,42 @@
 //!
 //! This demonstrates the integrated anti-dump protection including:
 //! - Indirect syscalls (dynamic SSN resolution)
-//! - RAII StealthGuard with cache flushing  
-//! - TinyVM-based key derivation
-//! - Decoy structure injection
-//! - PE header morphing
+//! - Decoy structure injection and passive honeytraps
+//! - PE header erasure and stealth verification
+//! - SecureVault protected data handling
 
-use fuckDebug::protector::{init_anti_dump, anti_dump};
+use fuckDebug::protector::{setup_anti_debug, anti_dump, SecureVault, get_suspicion_score};
 
 fn main() {
     println!("[*] Initializing Unified Memory Stealth System...");
     
-    // Initialize the system - this will:
-    // 1. Resolve syscalls dynamically from ntdll.dll
-    // 2. Morph PE headers (MZ -> 0xFFFF)
-    // 3. Register VEH handler
-    // 4. Spawn guard page roller thread
-    // 5. Spawn heap scrambler with decoy injection
-    init_anti_dump();
+    // 1. Initialize anti-dump subsystem (indirect syscalls, decoy honeytraps, header erasure)
+    let anti_dump_active = anti_dump::init_anti_dump();
+    println!("[+] Memory stealth anti-dump active: {}", anti_dump_active);
     
-    println!("[+] Memory stealth protection active");
+    // 2. Initialize protector
+    let seed = 0x1337_BEEF;
+    let protector = setup_anti_debug!(seed);
+    println!("[+] Protector runtime initialized");
     
-    // Example: Using StealthPtr with RAII guard
+    // 3. Example: Using SecureVault for memory-protected secret data
     let secret_data: u64 = 0xDEADBEEFCAFEBABE;
-    let stealth_ptr = anti_dump::StealthPtr::new(&secret_data);
+    let vault = SecureVault::new(secret_data);
     
-    {
-        // Access grants RAII guard - auto cache flush on drop
-        let guard = stealth_ptr.access();
-        println!("[+] Secret data accessed: 0x{:X}", *guard);
-        // StealthGuard drops here -> clflush evicts from cache
+    vault.unlock(&protector, |secret, key| {
+        let transformed = *secret ^ key;
+        println!("[+] Secret data accessed securely: 0x{:X}", transformed);
+    });
+    
+    // 4. Liveness check via KUSER_SHARED_DATA watchdog
+    unsafe {
+        anti_dump::check_system_liveness_via_kuser();
     }
+    println!("[+] System liveness verified via KUSER watchdog");
     
-    // Acquire lease for legitimate memory operations
-    anti_dump::acquire_access_lease();
-    println!("[+] Access lease acquired (100ms)");
+    // 5. Query overall security score
+    let score = get_suspicion_score();
+    println!("[+] Current suspicion score: {}", score);
     
-    // Do memory-intensive work here...
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    
-    anti_dump::release_access_lease();
-    println!("[+] Access lease released");
-    
-    // Verify integrity
-    let integrity_ok = anti_dump::verify_stealth_integrity();
-    println!("[{}] Stealth integrity: {}", 
-        if integrity_ok { "+" } else { "!" },
-        if integrity_ok { "VERIFIED" } else { "COMPROMISED" });
-    
-    println!("\n[*] Press Ctrl+C to exit. Attach Scylla/x64dbg to test...");
-    
-    // Keep running so you can test with external tools
-    loop {
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
+    println!("\n[*] Stealth system verified successfully.");
 }
