@@ -21,13 +21,6 @@ fuckDebug Architecture:   Debugger detected → Silent Key Poisoning →
                           Reverse engineering costs become economically prohibitive
 ```
 
-### [UPDATE] Latest Architecture & Hardening
-- **Silent Poisoning (Watchdog v2)**: Process termination is replaced with silent data poisoning. If thread suspension is detected (via a debugger pause), the system corrupts internal cryptographic keys and poison seeds instead of killing the process.
-- **Adaptive Sensitivity & Hypervisor Tolerance**: 5-second baseline threshold with heavy-load awareness (doubles timeout to 10s during high CPU usage). Hyper-V, VBS, and WSL2 environments are recognized via dynamic `"Microsoft Hv"` decoding and given a stable 60 suspicion score (well below the 100-point poisoning threshold).
-- **Entangled Execution (Anti-DBI / Anti-Trace)**: The TinyVM 2.0 execution loop is entangled with code location (RIP marker) and thread execution timing (`QueryThreadCycleTime` with a 2,000,000 cycle preemption threshold), silently corrupting state if code is relocated or single-stepped.
-- **Surgical Anti-Dump**: PE NT headers (`AddressOfEntryPoint`, NT signature, debug directories) are erased with `KUSER_SHARED_DATA` random entropy while DOS and section headers are preserved for OS and CRT loader stability.
-- **Formally Verified**: Backed by **30 Verus deductive mathematical theorems** (Z3 SMT solver) and **47 Bolero property-based fuzzing harnesses** with 100% verification pass rate across 125 tests.
-
 ---
 
 ## Key Features
