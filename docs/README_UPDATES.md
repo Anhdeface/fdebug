@@ -153,13 +153,15 @@ The documentation now explains **five concentric layers**:
 
 ```
 docs/
-├── architecture_guide_NEW.md          ✅ Updated (1180 lines)
-├── ARCHITECTURE_LAYER5.md             ✅ New (400 lines)
-├── reference_guide_NEW.md             ✅ Updated (858 lines)
-├── implementation_guide_NEW.md        ✅ Updated (860 lines)
-├── UPDATES.md                         ✅ New
-├── DOCUMENTATION_UPDATE_SUMMARY.md    ✅ New (350 lines)
-└── README.md                          (unchanged)
+├── FDEBUG_COMPLETE_GUIDE.md           ✅ Master Guide (Authoritative)
+├── architecture_guide_NEW.md          ✅ Synchronized 5-Layer Model
+├── ARCHITECTURE_LAYER5.md             ✅ Seed Orchestrator Specification
+├── reference_guide_NEW.md             ✅ API Reference Guide
+├── implementation_guide_NEW.md        ✅ Design Patterns & Best Practices
+├── BUILD_GUIDE.md                     ✅ Build Script & Verification Guide
+├── UPDATES.md                         ✅ Technical Changelog & Flaw Ledger
+├── DOCUMENTATION_UPDATE_SUMMARY.md    ✅ Verification & Update Summary
+└── README.md                          ✅ Root Guide (Synchronized)
 ```
 
 ---

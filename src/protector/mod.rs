@@ -25,7 +25,7 @@ pub mod seed_orchestrator;
 pub use crate::protector::seed_orchestrator::{get_dynamic_seed, get_dynamic_seed_u8};
 
 #[cfg(target_os = "windows")]
-mod tiny_vm;
+pub mod tiny_vm;
 #[cfg(target_os = "windows")]
 pub mod anti_debug;
 #[cfg(target_os = "windows")]
@@ -55,7 +55,10 @@ pub fn init_protector() {
         // 2. Initialize Master VEH FIRST before arming decoy traps
         enhanced_veh::init_master_veh();
 
-        // 3. Initialize Anti-Dump (Deploy Traps and Surgical Header Obfuscation)
+        // 3. Initialize Decoy System baseline hashes (FLAW-07)
+        crate::protector::decoy_system::init_decoy_system();
+
+        // 4. Initialize Anti-Dump (Deploy Traps and Surgical Header Obfuscation)
         crate::protector::anti_dump::init_anti_dump();
     });
 }
@@ -191,6 +194,9 @@ impl Protector {
             
             // Monitor decoy functions for patching
             decoy_system::watchdog_check_decoys();
+
+            // Refresh watchdog timestamp to prevent heartbeat starvation (FLAW-05)
+            pe_integrity::heartbeat_check(count as u32);
 
             // DIRECT SYSCALL WATCHDOG (Liveness Check)
             // Checks if the thread was suspended by a debugger

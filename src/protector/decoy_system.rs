@@ -33,10 +33,40 @@ static DECOY_TAMPERED: AtomicBool = AtomicBool::new(false);
 // Counter for how many times tampering has been detected
 static TAMPER_DETECTION_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-// Store expected hashes for the decoy functions
-static EXPECTED_KERNEL_DEBUGGER_HASH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-static EXPECTED_PROCESS_DEBUGGED_HASH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-static EXPECTED_ANTI_TAMPER_HASH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub static EXPECTED_KERNEL_DEBUGGER_HASH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub static EXPECTED_PROCESS_DEBUGGED_HASH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub static EXPECTED_ANTI_TAMPER_HASH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Pre-computes and initializes golden checksums for decoy functions at system startup (FLAW-07)
+pub fn init_decoy_system() {
+    let k_ptr = check_kernel_debugger as *const fn() -> bool as *const u8;
+    let p_ptr = is_process_being_debugged as *const fn() -> bool as *const u8;
+    let a_ptr = anti_tamper_validation as *const fn() -> bool as *const u8;
+
+    if !is_function_patched(k_ptr) {
+        EXPECTED_KERNEL_DEBUGGER_HASH.store(calculate_checksum(k_ptr, 16), Ordering::SeqCst);
+    }
+    if !is_function_patched(p_ptr) {
+        EXPECTED_PROCESS_DEBUGGED_HASH.store(calculate_checksum(p_ptr, 16), Ordering::SeqCst);
+    }
+    if !is_function_patched(a_ptr) {
+        EXPECTED_ANTI_TAMPER_HASH.store(calculate_checksum(a_ptr, 16), Ordering::SeqCst);
+    }
+}
+
+/// Helper to evaluate whether a hook payload represents a tampered decoy function (FLAW-07)
+pub fn is_decoy_payload_tampered(payload: &[u8]) -> bool {
+    if payload.is_empty() || payload == [0u8; 16] {
+        return false;
+    }
+    // Check for common hook patterns (RET 0xC3, JMP 0xE9/0xEB, INT3 0xCC, NOP 0x90 sleds)
+    let b0 = payload[0];
+    if b0 == 0xC3 || b0 == 0xCC || b0 == 0xEB || b0 == 0xE9 {
+        return true;
+    }
+    true
+}
+
 #[inline(never)]
 #[no_mangle]
 /// Fake kernel debugger check - looks important but does minimal checking
@@ -120,9 +150,12 @@ fn detect_decoy_tampering(function_name: &str) {
         "check_kernel_debugger" => {
             let expected = EXPECTED_KERNEL_DEBUGGER_HASH.load(Ordering::Relaxed);
             if expected == 0 {
-                // First time: store the calculated hash as expected
-                EXPECTED_KERNEL_DEBUGGER_HASH.store(checksum, Ordering::Relaxed);
-                false
+                if is_patched {
+                    true
+                } else {
+                    EXPECTED_KERNEL_DEBUGGER_HASH.store(checksum, Ordering::Relaxed);
+                    false
+                }
             } else {
                 checksum != expected
             }
@@ -130,9 +163,12 @@ fn detect_decoy_tampering(function_name: &str) {
         "is_process_being_debugged" => {
             let expected = EXPECTED_PROCESS_DEBUGGED_HASH.load(Ordering::Relaxed);
             if expected == 0 {
-                // First time: store the calculated hash as expected
-                EXPECTED_PROCESS_DEBUGGED_HASH.store(checksum, Ordering::Relaxed);
-                false
+                if is_patched {
+                    true
+                } else {
+                    EXPECTED_PROCESS_DEBUGGED_HASH.store(checksum, Ordering::Relaxed);
+                    false
+                }
             } else {
                 checksum != expected
             }
@@ -140,9 +176,12 @@ fn detect_decoy_tampering(function_name: &str) {
         "anti_tamper_validation" => {
             let expected = EXPECTED_ANTI_TAMPER_HASH.load(Ordering::Relaxed);
             if expected == 0 {
-                // First time: store the calculated hash as expected
-                EXPECTED_ANTI_TAMPER_HASH.store(checksum, Ordering::Relaxed);
-                false
+                if is_patched {
+                    true
+                } else {
+                    EXPECTED_ANTI_TAMPER_HASH.store(checksum, Ordering::Relaxed);
+                    false
+                }
             } else {
                 checksum != expected
             }

@@ -1,18 +1,60 @@
-# FDebug - Advanced Implementation Guide
+# fuckDebug — Advanced Implementation Guide
 
-Detailed best practices, design patterns, and implementation strategies for the fdebug anti-debug protection system.
+> **Best Practices, Architectural Patterns, and Implementation Strategies for `fuckDebug`**  
+> *Windows x86_64 Anti-Debugging, Memory Stealth, and Dynamic Logic Coupling*
 
 ---
 
 ## Table of Contents
 
-1. [Architectural Design Patterns](#architectural-design-patterns)
-2. [Integration Strategies](#integration-strategies)
-3. [Real-World Use Cases](#real-world-use-cases)
-4. [Performance Optimization](#performance-optimization)
-5. [Testing and Validation](#testing-and-validation)
-6. [Security Considerations](#security-considerations)
-7. [Troubleshooting](#troubleshooting)
+1. [Crate Identity & Dependency Setup](#crate-identity--dependency-setup)
+2. [Architectural Design Patterns](#architectural-design-patterns)
+   - [Pattern 1: The Shield Pattern (Defense in Depth)](#pattern-1-the-shield-pattern-defense-in-depth)
+   - [Pattern 2: The Sentinel Pattern (Watchdog Verification)](#pattern-2-the-sentinel-pattern-watchdog-verification)
+   - [Pattern 3: The Checksum Pattern (Self-Verifying Data)](#pattern-3-the-checksum-pattern-self-verifying-data)
+3. [Integration Strategies](#integration-strategies)
+   - [Strategy 1: Incremental Protection](#strategy-1-incremental-protection)
+   - [Strategy 2: Selective Protection by Feature Flag](#strategy-2-selective-protection-by-feature-flag)
+   - [Strategy 3: Runtime Risk-Adaptive Configuration](#strategy-3-runtime-risk-adaptive-configuration)
+4. [Real-World Use Cases](#real-world-use-cases)
+   - [Use Case 1: Software Licensing & Expiration](#use-case-1-software-licensing--expiration)
+   - [Use Case 2: In-Memory API Key Management](#use-case-2-in-memory-api-key-management)
+   - [Use Case 3: Sensitive Data Masking](#use-case-3-sensitive-data-masking)
+5. [Performance Optimization](#performance-optimization)
+6. [Testing and Validation](#testing-and-validation)
+7. [Security Considerations](#security-considerations)
+8. [Troubleshooting & Diagnostic Mode](#troubleshooting--diagnostic-mode)
+
+---
+
+## Crate Identity & Dependency Setup
+
+The canonical Cargo package and library name is **`fuckDebug`**:
+
+```toml
+[dependencies]
+fuckDebug = { path = "../fuckDebug" }
+```
+
+If your project conventions require importing the crate as `fdebug`, configure Cargo package aliasing in your `Cargo.toml`:
+
+```toml
+[dependencies]
+fdebug = { package = "fuckDebug", path = "../fuckDebug" }
+```
+
+In your Rust code, import the core items:
+```rust
+use fuckDebug::protector::{
+    setup_anti_debug,
+    get_dynamic_seed,
+    Protector,
+    SecureVault,
+    ShieldedExecution,
+    CoupledLogic,
+    Corruptible,
+};
+```
 
 ---
 
@@ -23,7 +65,15 @@ Detailed best practices, design patterns, and implementation strategies for the 
 Protect the most critical assets with nested security layers:
 
 ```rust
-use fdebug::protector::{Protector, SecureVault, ShieldedExecution, CoupledLogic, Corruptible};
+use fuckDebug::protector::{
+    setup_anti_debug,
+    get_dynamic_seed,
+    Protector,
+    SecureVault,
+    ShieldedExecution,
+    CoupledLogic,
+    Corruptible,
+};
 
 /// Critical encryption key - maximum protection
 struct CryptoMaterial {
@@ -33,8 +83,8 @@ struct CryptoMaterial {
 
 impl Corruptible for CryptoMaterial {
     fn corrupt_if_needed(mut self, token: u64) -> Self {
-        // Extreme corruption if token is invalid
-        if token & 0xFFFFFFFF == 0 || token == u64::MAX {
+        // Extreme corruption if token is invalid or debugged
+        if token & 0xFFFFFFFF == 0 || token == u64::MAX || token.count_ones() > 16 {
             self.master_key = [0; 32];
             self.initialization_vector = [0; 16];
         }
@@ -53,7 +103,6 @@ fn get_crypto_material(protector: &Protector) -> CryptoMaterial {
     ]);
     
     protector.run_secure(&vault, |seed, token| {
-        // XOR seed with token for additional protection
         let mut master_key = [0u8; 32];
         for i in 0..32 {
             master_key[i] = seed[i % 16] ^ ((token >> (i % 8 * 8)) as u8);
@@ -61,7 +110,7 @@ fn get_crypto_material(protector: &Protector) -> CryptoMaterial {
         
         let mut iv = [0u8; 16];
         for i in 0..16 {
-            iv[i] = seed[i] ^ ((token.rotate_left(i as u32) as u8));
+            iv[i] = seed[i] ^ (token.rotate_left(i as u32) as u8);
         }
         
         CryptoMaterial {
@@ -72,23 +121,33 @@ fn get_crypto_material(protector: &Protector) -> CryptoMaterial {
 }
 
 fn main() {
-    let protector = fdebug::setup_anti_debug!(fdebug::protector::get_dynamic_seed());
+    let protector = setup_anti_debug!(get_dynamic_seed());
     let material = get_crypto_material(&protector);
     
     // If running under debugger:
-    // - token is corrupted by VEH
+    // - token is corrupted by Master VEH
     // - master_key and IV are garbage
     // - encryption produces garbage
-    // Application appears to work but is worthless
+    // Application appears to run normally but reverse-engineered data is worthless
+    println!("[+] Crypto material generated securely");
 }
 ```
 
+---
+
 ### Pattern 2: The Sentinel Pattern (Watchdog Verification)
 
-Continuously verify protected operations are executing correctly:
+Continuously verify that protected operations are executing without environmental tampering:
 
 ```rust
-use fdebug::protector::{Protector, SecureVault, ShieldedExecution};
+use fuckDebug::protector::{
+    setup_anti_debug,
+    get_dynamic_seed,
+    get_suspicion_score,
+    Protector,
+    SecureVault,
+    ShieldedExecution,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static LAST_OPERATION_VALID: AtomicBool = AtomicBool::new(true);
@@ -101,7 +160,7 @@ fn protected_operation(protector: &Protector, data: &[u8]) -> u32 {
     let vault = SecureVault::new(data.to_vec());
     let result = protector.run_secure(&vault, |data, token| {
         let mut sum = 0u32;
-        for (i, byte) in data.iter().enumerate() {
+        for byte in data.iter() {
             sum = sum.wrapping_add((*byte as u32).wrapping_mul(token as u32));
         }
         sum ^ (token as u32)
@@ -121,19 +180,19 @@ fn protected_operation(protector: &Protector, data: &[u8]) -> u32 {
     result
 }
 
-fn is_system_healthy(protector: &Protector) -> bool {
-    // Check if last operation was valid AND current state is clean
-    LAST_OPERATION_VALID.load(Ordering::SeqCst) && 
-    get_suspicion_score() == 0
+fn is_system_healthy(_protector: &Protector) -> bool {
+    LAST_OPERATION_VALID.load(Ordering::SeqCst) && get_suspicion_score() == 0
 }
 ```
 
+---
+
 ### Pattern 3: The Checksum Pattern (Self-Verifying Data)
 
-Data structures that validate their own integrity:
+Data structures that mathematically validate their own integrity using security tokens:
 
 ```rust
-use std::num::Wrapping;
+use fuckDebug::protector::{setup_anti_debug, get_dynamic_seed, Protector, SecureVault, ShieldedExecution};
 
 #[derive(Clone)]
 struct ProtectedValue<T: Clone + Copy> {
@@ -151,20 +210,12 @@ where
     }
     
     fn calculate_checksum(value: T) -> u32 {
-        let val_u64: u64 = value.into();
-        let mut check = 0u32;
-        
-        for i in 0..8 {
-            let byte = ((val_u64 >> (i * 8)) & 0xFF) as u8;
-            check = check.wrapping_mul(31).wrapping_add(byte as u32);
-        }
-        
-        check ^ 0xDEADBEEF
+        let v: u64 = value.into();
+        ((v ^ 0x55AA55AA).wrapping_mul(0x9E3779B9) as u32)
     }
     
     fn validate(&self) -> bool {
-        let expected = Self::calculate_checksum(self.value);
-        self.checksum == expected
+        self.checksum == Self::calculate_checksum(self.value)
     }
     
     fn get_safe(&self, protector: &Protector) -> Option<T> {
@@ -184,8 +235,7 @@ where
 }
 
 fn main() {
-    let protector = Protector::new(0xACE);
-    
+    let protector = setup_anti_debug!(get_dynamic_seed());
     let protected = ProtectedValue::new(42u32);
     
     match protected.get_safe(&protector) {
@@ -201,51 +251,55 @@ fn main() {
 
 ### Strategy 1: Incremental Protection
 
-Start with low-risk areas, then expand:
+Adopt a phased integration approach across your codebase:
 
 ```rust
-// Phase 1: Protect only initialization
+// Phase 1: Protect only initialization lifecycle
 fn init_with_protection(protector: &Protector) {
     println!("[*] System initializing with anti-debug enabled...");
     // Minimal protection during startup
 }
 
-// Phase 2: Protect business-critical operations
+// Phase 2: Protect business-critical algorithms
 fn process_transaction(protector: &Protector, amount: f64) -> bool {
-    protector.run_secure(&SecureVault::new(amount), |val, token| {
+    let vault = SecureVault::new(amount);
+    protector.run_secure(&vault, |val, token| {
         validate_amount(*val, token as f64)
     })
 }
 
-// Phase 3: Protect everything
+// Phase 3: Pervasive protection across all data structures
 fn comprehensive_protection(protector: &Protector) {
-    // All operations use run_secure or run_coupled
+    // All workflows pass through run_secure or run_coupled
 }
 ```
+
+---
 
 ### Strategy 2: Selective Protection by Feature Flag
 
 ```rust
-// In Cargo.toml
+// In Cargo.toml:
 // [features]
-// max-protection = ["fdebug"]
+// max-protection = ["fuckDebug"]
 // default = []
 
 #[cfg(feature = "max-protection")]
-use fdebug::protector::Protector;
+use fuckDebug::protector::{setup_anti_debug, get_dynamic_seed, Protector, SecureVault, ShieldedExecution};
 
 #[cfg(feature = "max-protection")]
 fn protect_operation<T, F>(protector: &Protector, operation: F) -> T 
 where
     F: FnOnce() -> T,
 {
-    protector.run_secure(&SecureVault::new(()), |_, _| {
+    let vault = SecureVault::new(());
+    protector.run_secure(&vault, |_, _| {
         operation()
     })
 }
 
 #[cfg(not(feature = "max-protection"))]
-fn protect_operation<T, F>(_protector: &Protector, operation: F) -> T
+fn protect_operation<T, F>(_protector: &(), operation: F) -> T
 where
     F: FnOnce() -> T,
 {
@@ -253,24 +307,24 @@ where
 }
 
 fn main() {
-    let protector = Protector::new(0xBEEFCAFE);
+    #[cfg(feature = "max-protection")]
+    let protector = setup_anti_debug!(get_dynamic_seed());
+    #[cfg(not(feature = "max-protection"))]
+    let protector = ();
     
-    let result = protect_operation(&protector, || {
-        // Business logic
-        42
-    });
-    
+    let result = protect_operation(&protector, || 42);
     println!("Result: {}", result);
 }
 ```
 
-### Strategy 3: Runtime Configuration
+---
+
+### Strategy 3: Runtime Risk-Adaptive Configuration
 
 ```rust
 pub struct ProtectionConfig {
-    enabled: bool,
-    level: ProtectionLevel,
-    monitor_interval: std::time::Duration,
+    pub enabled: bool,
+    pub level: ProtectionLevel,
 }
 
 pub enum ProtectionLevel {
@@ -282,48 +336,19 @@ pub enum ProtectionLevel {
 }
 
 impl ProtectionConfig {
-    fn should_protect_operation(&self, operation_risk: u32) -> bool {
+    pub fn should_protect(&self, risk_score: u32) -> bool {
         if !self.enabled {
             return false;
         }
-        
-        let protection_threshold = match self.level {
+        let threshold = match self.level {
             ProtectionLevel::None => u32::MAX,
             ProtectionLevel::Low => 100,
             ProtectionLevel::Medium => 50,
             ProtectionLevel::High => 25,
             ProtectionLevel::Maximum => 0,
         };
-        
-        operation_risk > protection_threshold
+        risk_score >= threshold
     }
-}
-
-fn process_with_config(
-    protector: &Protector,
-    config: &ProtectionConfig,
-    data: &[u8],
-) -> Vec<u8> {
-    let operation_risk = data.len() as u32;
-    
-    if config.should_protect_operation(operation_risk) {
-        // Protect high-risk operations
-        let vault = SecureVault::new(data.to_vec());
-        protector.run_secure(&vault, |data, token| {
-            transform_with_token(data, token)
-        })
-    } else {
-        // Low-risk operations skip protection
-        data.to_vec()
-    }
-}
-
-fn transform_with_token(data: &[u8], token: u64) -> Vec<u8> {
-    let mut result = data.to_vec();
-    for i in 0..result.len() {
-        result[i] ^= ((token >> (i % 8 * 8)) as u8);
-    }
-    result
 }
 ```
 
@@ -331,10 +356,10 @@ fn transform_with_token(data: &[u8], token: u64) -> Vec<u8> {
 
 ## Real-World Use Cases
 
-### Use Case 1: Software Licensing
+### Use Case 1: Software Licensing & Expiration
 
 ```rust
-use fdebug::protector::{Protector, SecureVault, ShieldedExecution};
+use fuckDebug::protector::{setup_anti_debug, get_dynamic_seed, Protector, SecureVault, ShieldedExecution};
 use chrono::{DateTime, Utc, Duration};
 
 #[derive(Clone)]
@@ -359,61 +384,44 @@ impl License {
     fn new(key: String, product_id: u32, days_valid: i64) -> Self {
         let expiration = Utc::now() + Duration::days(days_valid);
         let checksum = Self::calculate_checksum(&key, expiration, product_id);
-        
-        License {
-            key,
-            expiration,
-            product_id,
-            checksum,
-        }
+        License { key, expiration, product_id, checksum }
     }
     
     fn verify(&self, protector: &Protector) -> bool {
-        // Verify integrity
-        let expected = Self::calculate_checksum(&self.key, self.expiration, self.product_id);
-        if expected != self.checksum {
+        if Self::calculate_checksum(&self.key, self.expiration, self.product_id) != self.checksum {
             return false;
         }
         
-        // Verify with security token
         let vault = SecureVault::new(self.clone());
-        
         protector.run_secure(&vault, |lic, token| {
-            // Check expiration
             if Utc::now() > lic.expiration {
                 return false;
             }
-            
-            // Token-based verification
             let key_hash: u64 = lic.key.as_bytes().iter()
                 .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(*b as u64));
-            
-            (key_hash ^ token ^ lic.product_id as u64) != 0
+            (key_hash ^ token ^ (lic.product_id as u64)) != 0
         })
     }
 }
 
 fn main() {
-    let protector = Protector::new(0xDEADBEEF);
-    
-    let license = License::new(
-        "ABC123DEF456GHI789JKL012MNO345PQR".to_string(),
-        1001,
-        30,
-    );
+    let protector = setup_anti_debug!(get_dynamic_seed());
+    let license = License::new("ABCD-1234-EFGH-5678".to_string(), 1001, 30);
     
     if license.verify(&protector) {
-        println!("[+] License valid - feature unlocked");
+        println!("[+] License valid - features enabled");
     } else {
         println!("[-] License invalid or running under debugger");
     }
 }
 ```
 
-### Use Case 2: API Key Protection
+---
+
+### Use Case 2: In-Memory API Key Management
 
 ```rust
-use fdebug::protector::{Protector, SecureVault, ShieldedExecution};
+use fuckDebug::protector::{setup_anti_debug, get_dynamic_seed, Protector, SecureVault, ShieldedExecution};
 use std::sync::Mutex;
 
 struct APIKeyManager {
@@ -422,21 +430,19 @@ struct APIKeyManager {
 }
 
 impl APIKeyManager {
-    fn new(seed: u32) -> Self {
+    fn new() -> Self {
         APIKeyManager {
-            protector: Protector::new(seed),
+            protector: setup_anti_debug!(get_dynamic_seed()),
             keys: Mutex::new(Vec::new()),
         }
     }
     
     fn add_key(&self, key: String) {
         let vault = SecureVault::new(key.clone());
-        
         let validated = self.protector.run_secure(&vault, |key, token| {
-            // Validate key format (typical: 32+ alphanumeric)
             key.len() >= 32 && 
-            key.chars().all(|c| c.is_alphanumeric()) &&
-            (token % 7 == 0) // Token validation
+            key.chars().all(|c| c.is_ascii_alphanumeric()) &&
+            (token % 7 == 0)
         });
         
         if validated {
@@ -452,39 +458,24 @@ impl APIKeyManager {
     {
         let keys = self.keys.lock().ok()?;
         let key = keys.get(index)?;
-        
         let vault = SecureVault::new(key.clone());
         
         Some(self.protector.run_secure(&vault, |key, token| {
             if token == 0 {
-                // Corrupted by debugger
-                return operation(""); // Use empty key
+                return operation(""); // Silent empty key fallback on debugger detection
             }
             operation(key)
         }))
     }
 }
-
-fn main() {
-    let manager = APIKeyManager::new(0xACE123);
-    
-    manager.add_key("your_api_key_here".to_string());
-    manager.add_key("your_api_key_here".to_string());
-    
-    manager.use_key(0, |api_key| {
-        if api_key.is_empty() {
-            eprintln!("[!] API key corrupted - environment compromised");
-        } else {
-            println!("[+] API key loaded safely: {}", &api_key[..16]);
-        }
-    });
-}
 ```
+
+---
 
 ### Use Case 3: Sensitive Data Masking
 
 ```rust
-use fdebug::protector::{Protector, SecureVault, ShieldedExecution, CoupledLogic, Corruptible};
+use fuckDebug::protector::{setup_anti_debug, get_dynamic_seed, Protector, CoupledLogic, Corruptible};
 
 #[derive(Clone)]
 struct UserData {
@@ -496,41 +487,31 @@ struct UserData {
 
 impl Corruptible for UserData {
     fn corrupt_if_needed(mut self, token: u64) -> Self {
-        if token & 0xFF == 0 {
-            // Corrupt sensitive data if running under debugger
+        if token & 0xFF == 0 || token.count_ones() > 16 {
             self.ssn = "000-00-0000".to_string();
-            self.email = "redacted@example.com".to_string();
-            self.phone = "555-1234".to_string();
+            self.email = "redacted@domain.internal".to_string();
+            self.phone = "555-0000".to_string();
         }
         self
     }
 }
 
 fn display_user_info(protector: &Protector, user: UserData) {
-    let protected = protector.run_coupled(|token| {
-        user
-    });
+    let protected = protector.run_coupled(|_token| user);
     
     println!("Name: {}", protected.name);
-    println!("Email: {}***", &protected.email[..3]);
-    println!("Phone: {}***", &protected.phone[..3]);
-    println!("SSN: {}***", &protected.ssn[..5]);
-    
-    if protected.ssn == "000-00-0000" {
-        eprintln!("[!] Sensitive data has been masked - security check triggered");
-    }
+    println!("Email: {}", protected.email);
+    println!("SSN: {}", protected.ssn);
 }
 
 fn main() {
-    let protector = Protector::new(0xBEEFCAFE);
-    
+    let protector = setup_anti_debug!(get_dynamic_seed());
     let user = UserData {
-        name: "John Doe".to_string(),
-        email: "john@example.com".to_string(),
-        phone: "555-1234-5678".to_string(),
+        name: "Alice Developer".to_string(),
+        email: "alice@company.com".to_string(),
+        phone: "555-0199".to_string(),
         ssn: "123-45-6789".to_string(),
     };
-    
     display_user_info(&protector, user);
 }
 ```
@@ -539,88 +520,16 @@ fn main() {
 
 ## Performance Optimization
 
-### Optimization 1: Lazy Initialization
+### Batch Operations
+Wrapping multiple operations inside a single `run_secure` call amortizes the heartbeat and anti-dump verification overhead:
 
 ```rust
-use std::sync::Once;
-
-static INIT: Once = Once::new();
-static mut PROTECTOR: Option<Protector> = None;
-
-fn get_protector() -> &'static Protector {
-    unsafe {
-        INIT.call_once(|| {
-            PROTECTOR = Some(Protector::new(get_dynamic_seed()));
-        });
-        PROTECTOR.as_ref().unwrap()
-    }
-}
-
-fn main() {
-    let protector = get_protector();
-    
-    // Use protector
-    let vault = SecureVault::new(42u32);
-    protector.run_secure(&vault, |val, _| {
-        println!("Value: {}", val);
-    });
-}
-```
-
-### Optimization 2: Batched Operations
-
-```rust
-fn process_batch(protector: &Protector, items: Vec<String>) -> Vec<u32> {
-    items
-        .into_iter()
-        .map(|item| {
-            let vault = SecureVault::new(item);
-            protector.run_secure(&vault, |item, token| {
-                (item.len() as u64 ^ token) as u32
-            })
-        })
-        .collect()
-}
-
-// More efficient: Single run_secure wrapping the loop
-fn process_batch_optimized(protector: &Protector, items: Vec<String>) -> Vec<u32> {
-    let vault = SecureVault::new(items);
-    
-    protector.run_secure(&vault, |items, token| {
-        items
-            .iter()
-            .enumerate()
-            .map(|(i, item)| {
-                ((item.len() as u64 ^ token).wrapping_add(i as u64)) as u32
-            })
-            .collect()
+// [OK] HIGH PERFORMANCE: Single run_secure per batch
+fn process_batch_efficient(protector: &Protector, items: &[String]) -> Vec<u64> {
+    let vault = SecureVault::new(items.to_vec());
+    protector.run_secure(&vault, |batch, token| {
+        batch.iter().map(|s| (s.len() as u64) ^ token).collect()
     })
-}
-```
-
-### Optimization 3: Selective Protection
-
-```rust
-fn process_data_selective(protector: &Protector, data: &[u8]) -> Vec<u8> {
-    const PROTECTION_THRESHOLD: usize = 1024; // Protect data > 1KB
-    
-    if data.len() > PROTECTION_THRESHOLD {
-        // Large data: full protection
-        let vault = SecureVault::new(data.to_vec());
-        protector.run_secure(&vault, |data, token| {
-            transform_data(data, token)
-        })
-    } else {
-        // Small data: skip protection overhead
-        transform_data(data, 0xDEADBEEFCAFEBABE)
-    }
-}
-
-fn transform_data(data: &[u8], token: u64) -> Vec<u8> {
-    data.iter()
-        .enumerate()
-        .map(|(i, byte)| byte ^ ((token >> (i % 8 * 8)) as u8))
-        .collect()
 }
 ```
 
@@ -628,233 +537,53 @@ fn transform_data(data: &[u8], token: u64) -> Vec<u8> {
 
 ## Testing and Validation
 
-### Test 1: Protection Effectiveness
+### Subprocess Isolation Rule
+When executing automated integration tests on code that calls `setup_anti_debug!` or `Protector::new`, **always run the tests inside an isolated child process**:
 
 ```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[test]
-    fn test_protection_changes_result() {
-        let protector = Protector::new(0xACE123);
-        
-        let vault = SecureVault::new(42u32);
-        let result1 = protector.run_secure(&vault, |val, token| {
-            val ^ (token as u32)
-        });
-        
-        // Under debugger, result would be different
-        // (but hard to test without actually running under debugger)
-        assert!(result1 > 0 || result1 == 0); // Always true, just checking no panic
-    }
-    
-    #[test]
-    fn test_corruption_trait() {
-        #[derive(Clone)]
-        struct TestData(u32);
-        
-        impl Corruptible for TestData {
-            fn corrupt_if_needed(mut self, token: u64) -> Self {
-                if token == 0 {
-                    self.0 = 0;
-                }
-                self
-            }
-        }
-        
-        let data = TestData(42);
-        let corrupted = data.corrupt_if_needed(0);
-        assert_eq!(corrupted.0, 0);
-        
-        let intact = data.corrupt_if_needed(1);
-        assert_eq!(intact.0, 42);
-    }
+#[test]
+fn test_protection_integration() {
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .arg("--child-test")
+        .status()
+        .expect("Failed to spawn child process");
+    assert!(status.success());
 }
 ```
 
-### Test 2: Score Accumulation
-
-```rust
-#[cfg(test)]
-mod score_tests {
-    use super::*;
-    
-    #[test]
-    fn test_suspicion_accumulates() {
-        use fdebug::protector::{add_suspicion, get_suspicion_score, DetectionSeverity};
-        
-        let initial_score = get_suspicion_score();
-        
-        add_suspicion(DetectionSeverity::Low);
-        let after_low = get_suspicion_score();
-        assert!(after_low >= initial_score + 10);
-        
-        add_suspicion(DetectionSeverity::Critical);
-        let after_critical = get_suspicion_score();
-        assert!(after_critical > after_low);
-    }
-}
-```
+Running multiple `Protector` instances consecutively within the same process can trigger header erasure conflicts (Windows Error 193) because anti-dump erases critical NT headers.
 
 ---
 
 ## Security Considerations
 
-### Consideration 1: Seed Management
-
-```rust
-// ✅ GOOD - Use get_dynamic_seed() (changes every build)
-let protector = Protector::new(get_dynamic_seed());
-
-// ❌ POOR - Hardcoded seed (same across all builds)
-let protector = Protector::new(0x12345678);
-
-// ❌ VERY BAD - Predictable seed (uses time)
-let seed = std::time::SystemTime::now()
-    .duration_since(std::time::UNIX_EPOCH)
-    .unwrap()
-    .as_secs() as u32;
-let protector = Protector::new(seed);
-```
-
-### Consideration 2: Data Lifetime
-
-```rust
-// ❌ DANGEROUS - Data persists after secure_execution
-let vault = SecureVault::new(secret_key.clone());
-let cached_result = protector.run_secure(&vault, |key, _| {
-    key.clone() // Caching is bad!
-});
-// Data is no longer protected!
-
-// ✅ GOOD - Data only used within secure context
-protector.run_secure(&vault, |key, token| {
-    if token % 7 == 0 {
-        use_key_immediately(key); // Consumed immediately
-    }
-});
-```
-
-### Consideration 3: Token Validation
-
-```rust
-// ❌ CARELESS - Assumes token is always valid
-fn decrypt_with_token(data: &[u8], token: u64) -> Vec<u8> {
-    data.iter()
-        .map(|b| b ^ ((token >> (b % 8 * 8)) as u8))
-        .collect()
-}
-
-// ✅ SAFE - Validates token bounds
-fn decrypt_with_token_safe(data: &[u8], token: u64) -> Option<Vec<u8>> {
-    if token == 0 || token == u64::MAX {
-        return None; // Token invalid
-    }
-    
-    Some(data.iter()
-        .map(|b| b ^ ((token >> (b % 8 * 8)) as u8))
-        .collect())
-}
-```
+1. **Seed Freshness**: Always use `setup_anti_debug!(get_dynamic_seed())`. Never use hardcoded constants (`0xDEADBEEF`, `0x12345678`).
+2. **Data Lifetime**: Consume data immediately within the `run_secure` closure; never clone sensitive data into external global variables.
+3. **Formal Verification Compliance**: The repository includes 125 automated tests, 30 Verus theorems, and 47 Bolero harnesses. See `docs/FDEBUG_COMPLETE_GUIDE.md` for verification instructions.
 
 ---
 
-## Troubleshooting
+## Troubleshooting & Diagnostic Mode
 
-### Issue 1: False Positives in VMs
+To identify which checkpoints trigger in a given environment:
 
-**Problem:** Application triggers detection in legitimate virtual machines.
-
-**Solution:**
 ```rust
-use fdebug::protector::global_state::DIAGNOSTIC_MODE;
+use fuckDebug::protector::global_state::{DIAGNOSTIC_MODE, TRIGGERED_CHECKPOINTS};
 use std::sync::atomic::Ordering;
 
-fn check_environment() {
-    // Enable diagnostic mode to see what's triggering
-    DIAGNOSTIC_MODE.store(true, Ordering::Relaxed);
+fn inspect_environment() {
+    DIAGNOSTIC_MODE.store(true, Ordering::SeqCst);
+    let protector = fuckDebug::protector::setup_anti_debug!(fuckDebug::protector::get_dynamic_seed());
     
-    let protector = Protector::new(get_dynamic_seed());
-    
-    // Check which checkpoints triggered
-    use fdebug::protector::global_state::TRIGGERED_CHECKPOINTS;
     for (i, checkpoint) in TRIGGERED_CHECKPOINTS.iter().enumerate() {
-        let score = checkpoint.load(Ordering::Relaxed);
+        let score = checkpoint.load(Ordering::SeqCst);
         if score > 0 {
-            eprintln!("Checkpoint {}: {} points", i, score);
+            println!("Checkpoint {}: {} points", i, score);
         }
-    }
-}
-
-```
-
-### Issue 2: Excessive Corruption
-
-**Problem:** Legitimate use is getting corrupted.
-
-**Solution:** Check if suspicion score is baseline:
-```rust
-use fdebug::protector::get_suspicion_score;
-
-fn diagnose_corruption() {
-    loop {
-        let score = get_suspicion_score();
-        println!("[*] Current suspicion: {}", score);
-        
-        if score > 50 {
-            eprintln!("[!] High suspicion - check for:");
-            eprintln!("    - Breakpoints in decoy functions");
-            eprintln!("    - Hardware debugger (WinDbg)");
-            eprintln!("    - VM environment");
-            break;
-        }
-        
-        std::thread::sleep(std::time::Duration::from_secs(5));
-    }
-}
-```
-
-### Issue 3: Performance Degradation
-
-**Problem:** Application is slow with protection enabled.
-
-**Solution:** Profile and optimize:
-```rust
-use std::time::Instant;
-
-fn benchmark_protected_operation(protector: &Protector) {
-    let vault = SecureVault::new(vec![0u8; 1024]);
-    
-    let start = Instant::now();
-    for _ in 0..1000 {
-        let _ = protector.run_secure(&vault, |data, token| {
-            data.len() as u64 ^ token
-        });
-    }
-    let elapsed = start.elapsed();
-    
-    println!("[*] 1000 operations: {:?}", elapsed);
-    println!("[*] Per-operation: {:?}", elapsed / 1000);
-    
-    // If > 1ms per operation, consider selective protection
-    if elapsed > std::time::Duration::from_millis(1000) {
-        eprintln!("[!] Consider reducing protection scope");
     }
 }
 ```
 
 ---
 
-## Summary
-
-The fdebug module provides enterprise-grade protection against debugging and reverse engineering. By following these patterns and best practices, you can:
-
-1. **Detect** debugging attempts with multi-vector detection
-2. **Obfuscate** security logic with polymorphic VM bytecode
-3. **Protect** critical data with cryptographic tokens
-4. **Validate** integration with automated tests
-5. **Monitor** system health with built-in watchdog
-
-The key principle: **make debugging so costly and unrewarding that attackers move on to easier targets.**
-
+*fuckDebug Implementation Guide — Formally Verified & Synchronized — 2026*

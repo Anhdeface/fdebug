@@ -115,7 +115,7 @@ fn fnv1a_hash(data: &[u8]) -> u32 {
 /// This acts as the "Reference State".
 ///
 /// **Returns**: True if successful, False if PE parsing fails.
-unsafe fn init_shard_table() -> bool {
+pub unsafe fn init_shard_table() -> bool {
     // 1. Get Module Base
     let base = GetModuleHandleW(ptr::null());
     if base.is_null() { return false; }
@@ -243,15 +243,14 @@ pub fn heartbeat_check(seed: u32) -> u64 {
         // to avoid expensive system calls if possible, or just std::time
         // For zero-dep compliance in this module (it used std before), we can call global_state helper
         // But pe_integrity doesn't depend on global_state for time yet.
-        // SAFETY: KUSER_SHARED_DATA is a fixed page at 0x7FFE0000 in Windows (user mode).
-        // 0x7FFE0014 is InterruptTime (low), 0x7FFE0008 is SystemTime.
         unsafe {
-            let it_low = (0x7FFE0014 as *const u32).read_volatile();
-            let st = (0x7FFE0008 as *const u64).read_volatile();
-            let interrupt_time = (it_low as u64) ^ st;
-            // Convert 100ns intervals to approx seconds (divide by 10,000,000)
-            // Just storing raw ticks is fine if watchdog compares raw ticks
-            crate::protector::global_state::LAST_VM_HEARTBEAT.store(interrupt_time, Ordering::Relaxed);
+            // Harmonized Watchdog Timestamp: read 64-bit time (uptime in 100ns units)
+            // matching anti_dump::check_system_liveness_via_kuser (FLAW-05)
+            // 0x7FFE0014 is 4-byte aligned, so read two 32-bit words to avoid alignment violation
+            let low = (0x7FFE0014 as *const u32).read_volatile() as u64;
+            let high = (0x7FFE0018 as *const u32).read_volatile() as u64;
+            let current_uptime = (high << 32) | low;
+            crate::protector::global_state::LAST_VM_HEARTBEAT.store(current_uptime, Ordering::Relaxed);
         }
     } else {
         // MISMATCH: Code Modification Detected!

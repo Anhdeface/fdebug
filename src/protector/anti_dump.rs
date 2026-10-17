@@ -172,6 +172,9 @@ unsafe fn resolve_exit_syscall() -> bool {
 }
 
 #[cfg(target_arch = "x86_64")]
+/// Reserved stack bytes for indirect syscall assembly frame (at least 0x30 to safely accommodate [rsp+0x28])
+pub const SYSCALL_STACK_RESERVED_BYTES: usize = 0x38;
+
 unsafe fn indirect_nt_protect_virtual_memory(
     process_handle: isize,
     base_address: *mut *mut std::ffi::c_void,
@@ -188,15 +191,15 @@ unsafe fn indirect_nt_protect_virtual_memory(
     // SAFETY: We are executing a raw syscall instruction. 
     // - The SSN (eax) and syscall address (SYSCALL_J_ADDR) are resolved dynamically from ntdll.
     // - Argument registers (r10, rdx, r8, r9) match the x64 Windows syscall convention.
-    // - Stack is aligned and shadow space (0x20) is allocated plus padding.
-    // - All pointers passed are valid local variables or arguments.
+    // - Stack is aligned and shadow space plus 5th stack argument space (0x38 bytes) is allocated.
+    // - Writing to [rsp+0x28] of size 8 is strictly within the allocated 0x38 (56 bytes) bounds.
     unsafe {
         std::arch::asm!(
-            "sub rsp, 0x28",
+            "sub rsp, 0x38",
             "mov [rsp+0x20], {p_old}",
             "mov [rsp+0x28], {p_old}",
             "call {target_gadget}",
-            "add rsp, 0x28",
+            "add rsp, 0x38",
             in("r10") process_handle,
             in("rdx") base_address,
             in("r8") number_of_bytes_to_protect,
@@ -294,9 +297,9 @@ unsafe fn erase_critical_headers(base: *mut u8) {
     if prot_res {
         let entropy = get_kuser_shared_entropy();
         
-        // 1. Corrupt NT Signature (PE\0\0) -> Bricks strict PE parsers
-        // NOTE: We preserve DOS Header (e_magic) and section headers (.pdata unwind) for system stability.
-        ptr::write_volatile(&mut (*nt).Signature, (entropy & 0xFFFFFFFF) as u32);
+        // 1. Preserve NT Signature (PE\0\0) to ensure section headers and shard table remain accessible
+        // for runtime integrity verification and system unwind stability (FLAW-08).
+        // NOTE: We preserve Signature, DOS Header (e_magic) and section headers (.pdata unwind).
 
         // 2. Corrupt AddressOfEntryPoint -> Bricks execution flow analysis
         ptr::write_volatile(&mut (*nt).OptionalHeader.AddressOfEntryPoint, ((entropy >> 13) & 0xFFFFFFFF) as u32);
@@ -311,10 +314,6 @@ unsafe fn erase_critical_headers(base: *mut u8) {
 
 // ============================================================================
 // COMPONENT 4: PRODUCTION VEH
-// ============================================================================
-
-// ============================================================================
-// COMPONENT 4: PRODUCTION VEH (REMOVED - Handled by Master VEH)
 // ============================================================================
 
 // Legacy veh_handler removed.
@@ -337,6 +336,9 @@ pub fn init_anti_dump() -> bool {
             return false; 
         }
         
+        // Ensure shard table in pe_integrity is cached / initialized before erasing PE headers (FLAW-08)
+        crate::protector::pe_integrity::init_shard_table();
+
         if !resolve_indirect_syscalls() {
             crate::protector::global_state::add_suspicion(crate::protector::global_state::DetectionSeverity::Medium);
         }
@@ -397,10 +399,11 @@ pub unsafe fn check_system_liveness_via_kuser() {
     // If heartbeat is 0, system might be just starting, skip check
     if last_heartbeat == 0 { return; }
     
-    // Read current InterruptTime (100ns units) from KUSER_SHARED_DATA
-    // 0x7FFE0014 is InterruptTime (low 32 bits), we read all 64 bits starting at 0x7FFE0014
-    // Note: On x64 this is stable.
-    let current_time = (0x7FFE0014 as *const u64).read_volatile();
+    // Read current time (100ns units) from KUSER_SHARED_DATA
+    // 0x7FFE0014 is 4-byte aligned, read two 32-bit words to avoid alignment violation
+    let low = (0x7FFE0014 as *const u32).read_volatile() as u64;
+    let high = (0x7FFE0018 as *const u32).read_volatile() as u64;
+    let current_time = (high << 32) | low;
     
     // 2. Adaptive Thresholding
     // Default threshold: 5 seconds (50,000,000 units)

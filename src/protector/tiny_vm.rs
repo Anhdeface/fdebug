@@ -158,7 +158,7 @@ macro_rules! auto_op {
     }};
 }
 
-fn get_global_encoded_state() -> u32 {
+pub fn get_global_encoded_state() -> u32 {
     let score = crate::protector::global_state::get_suspicion_score();
     if score > 100 { 1 } else { 0 }
 }
@@ -508,14 +508,6 @@ unsafe fn fetch_next_instruction(
     
     let raw_byte = bytecode[state.vip];
     
-    // [HEARTBEAT INJECTION]
-    // Randomly trigger integrity checks based on VIP/Key entropy
-    // Used sparingly to avoid performance hit, but enough to entangle long-running VMs
-    if (state.vip & 0x7F) == 0x3 { 
-        let seed = (state.key as u32).wrapping_add(state.vip as u32);
-        crate::protector::pe_integrity::heartbeat_check(seed);
-    }
-
     // 1. Calculate Position Dependent Salt
     let pos_salt = (state.vip as u8).wrapping_mul(0x7);
     
@@ -574,6 +566,55 @@ unsafe fn fetch_operand_byte(
 
     state.vip += 1;
     val
+}
+
+// ============================================================================
+// CANONICAL ROLLING-KEY BYTECODE ENCODER
+// ============================================================================
+
+/// Encode arbitrary plaintext bytecode (opcodes and operands) into a TinyVM-compatible stream.
+///
+/// Inverts TinyVM's decoding equation:
+///   raw_byte = (plain - pos_salt) ^ encryption_key ^ state_key ^ integrity_val
+/// with exact rolling state key evolution matching the VM instruction/operand decoder.
+#[inline]
+pub fn encode_bytecode(plain_bytes: &[u8], encryption_key: u8) -> Vec<u8> {
+    let mut encoded = Vec::with_capacity(plain_bytes.len());
+    let mut state_key: u8 = 0;
+    let integrity_val = crate::protector::pe_integrity::INTEGRITY_TOKEN.load(Ordering::Relaxed) as u8;
+    let global_entropy = crate::protector::global_state::GLOBAL_VIRTUAL_MACHINE_KEY.load(Ordering::Relaxed);
+
+    for (vip, &plain) in plain_bytes.iter().enumerate() {
+        let pos_salt = (vip as u8).wrapping_mul(0x7);
+        let raw_byte = plain.wrapping_sub(pos_salt) ^ encryption_key ^ state_key ^ integrity_val;
+        encoded.push(raw_byte);
+
+        state_key = state_key.wrapping_add(raw_byte).wrapping_mul(0x1F);
+        state_key ^= state_key.rotate_right(3) ^ 0x3C;
+        state_key ^= global_entropy;
+    }
+    encoded
+}
+
+/// Zero-allocation stack array variant of the bytecode encoder.
+/// Ideal for early process initialization (TLS callbacks) and high-frequency checkpoints.
+#[inline]
+pub fn encode_bytecode_array<const N: usize>(plain_bytes: &[u8; N], encryption_key: u8) -> [u8; N] {
+    let mut encoded = [0u8; N];
+    let mut state_key: u8 = 0;
+    let integrity_val = crate::protector::pe_integrity::INTEGRITY_TOKEN.load(Ordering::Relaxed) as u8;
+    let global_entropy = crate::protector::global_state::GLOBAL_VIRTUAL_MACHINE_KEY.load(Ordering::Relaxed);
+
+    for (vip, &plain) in plain_bytes.iter().enumerate() {
+        let pos_salt = (vip as u8).wrapping_mul(0x7);
+        let raw_byte = plain.wrapping_sub(pos_salt) ^ encryption_key ^ state_key ^ integrity_val;
+        encoded[vip] = raw_byte;
+
+        state_key = state_key.wrapping_add(raw_byte).wrapping_mul(0x1F);
+        state_key ^= state_key.rotate_right(3) ^ 0x3C;
+        state_key ^= global_entropy;
+    }
+    encoded
 }
 
 /// Trap handler for undefined opcodes
@@ -955,7 +996,14 @@ unsafe fn op_early_bird(
     bytecode: &[u8], vm: &mut TinyVm, state: &mut VmExecutionState, encryption_key: u8,
 ) {
     let being_debugged: u8;
-    asm!("mov {}, gs:[0x60 + 0x02]", out(reg_byte) being_debugged, options(nostack, preserves_flags, readonly));
+    let peb: *const u8;
+    asm!(
+        "mov {peb}, gs:[0x60]",
+        "mov {out_byte}, byte ptr [{peb} + 0x02]",
+        peb = out(reg) peb,
+        out_byte = out(reg_byte) being_debugged,
+        options(nostack, preserves_flags, readonly)
+    );
     vm.push(being_debugged as u64);
     fetch_next_instruction(bytecode, state, encryption_key);
 }
@@ -1085,6 +1133,11 @@ fn build_dispatch_table() -> [VmInstruction; 256] {
 // EXECUTION ENGINE (INDIRECT THREADING TRAMPOLINE)
 // ============================================================================
 
+/// Threshold for anti-trace CPU cycle delta detection. Set to 2,000,000 cycles to allow
+/// normal OS preemption, quantum expiry, and page faults (50,000..200,000 cycles) without
+/// false positives, while still catching single-stepping / interactive debugger tracing.
+pub const ANTI_TRACE_CYCLE_THRESHOLD: u64 = 2_000_000;
+
 /// Execute bytecode using indirect threading with RANDOMIZED DISPATCH
 /// 
 /// **CFG Analysis Resistance**:
@@ -1150,14 +1203,14 @@ pub fn vm_execute(bytecode: &[u8], encryption_key: u8, context_key: u64) -> u64 
 
             // --- Anti-Trace: Thread Cycle Heartbeat ---
             // Every 16 instructions, check for excessive CPU cycle consumption.
-            // Single-stepping or tracing causes massive overhead (50k+ cycles).
+            // Human interactive single-stepping causes massive overhead (millions of cycles).
+            // Normal OS thread preemption/context switches (50k..200k cycles) are accommodated
+            // by ANTI_TRACE_CYCLE_THRESHOLD to avoid corrupting legitimate execution.
             if (state.vip & 0xF) == 0 {
                 let current_cycles = get_thread_cycles();
                 let delta = current_cycles.wrapping_sub(state.last_cycles);
                 
-                // Threshold: 50,000 cycles per 16 instructions is abnormally high
-                // Normal execution: ~1000-5000 cycles. Tracing: 100k+ cycles.
-                if delta > 50_000 {
+                if delta > ANTI_TRACE_CYCLE_THRESHOLD {
                     state.key ^= 0x55; // Corrupt key silently
                 }
                 state.last_cycles = current_cycles;

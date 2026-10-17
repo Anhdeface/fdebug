@@ -1,93 +1,105 @@
 ![img](https://i.pinimg.com/originals/c9/16/d9/c916d9fc9dd8b168666baea645f54234.gif)
-# FDebug - Advanced Anti-Debug Protection System
+# fuckDebug — Advanced Anti-Debug & Integrity Protection System
 
-A sophisticated, multi-layered anti-debugging protection system for Rust applications on Windows x86-64. FDebug detects debugging attempts and silently corrupts sensitive computations when tampering is detected, making reverse engineering economically unfeasible.
+[![Version](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FAnhdeface%2Ffdebug%2Fmain%2FCargo.toml&query=%24.package.version&label=version&color=blue&prefix=v)](Cargo.toml)
+[![Crates.io](https://img.shields.io/crates/v/fuckDebug.svg)](https://crates.io/crates/fuckDebug)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+A sophisticated, multi-layered anti-debugging, memory stealth, and polymorphic execution protection engine for Rust applications on Windows x86-64. `fuckDebug` detects debugging and analysis attempts and silently poisons sensitive cryptographic computations, making reverse engineering economically intractable.
+
+---
 
 ## Core Philosophy
 
-Rather than crashing when a debugger is detected (which provides attackers an easy anchor point), **fdebug** silently corrupts the transformation keys and internal state. The protected application continues running but produces subtly incorrect results - making debugging an endless nightmare of phantom bugs with no root cause.
+Rather than halting with a crash or exception when a debugger is detected (which provides attackers an immediate, reproducible patch anchor), **`fuckDebug` silently corrupts internal transformation keys and global state**. The protected application continues executing normally, but produces subtly and plausibly incorrect results — turning dynamic analysis into an endless search for phantom bugs with no visible root cause.
 
 ```
-Traditional Anti-Debug:  Debugger detected → Crash → Attacker patches
+Traditional Anti-Debug:   Debugger detected → Crash / ExitProcess → Trivial NOP/JMP patch
                         
-FDebug Protection:      Debugger detected → Silent Corruption → 
-                        All calculations wrong → Attacker spends weeks 
-                        debugging non-existent bugs → Attacker gives up
+fuckDebug Architecture:   Debugger detected → Silent Key Poisoning → 
+                          Calculations produce plausible phantom outputs → 
+                          Reverse engineering costs become economically prohibitive
 ```
 
-### [UPDATE] Latest Update: Watchdog v2 & Stability Refinement
+### [UPDATE] Latest Architecture & Hardening
+- **Silent Poisoning (Watchdog v2)**: Process termination is replaced with silent data poisoning. If thread suspension is detected (via a debugger pause), the system corrupts internal cryptographic keys and poison seeds instead of killing the process.
+- **Adaptive Sensitivity & Hypervisor Tolerance**: 5-second baseline threshold with heavy-load awareness (doubles timeout to 10s during high CPU usage). Hyper-V, VBS, and WSL2 environments are recognized via dynamic `"Microsoft Hv"` decoding and given a stable 60 suspicion score (well below the 100-point poisoning threshold).
+- **Entangled Execution (Anti-DBI / Anti-Trace)**: The TinyVM 2.0 execution loop is entangled with code location (RIP marker) and thread execution timing (`QueryThreadCycleTime` with a 2,000,000 cycle preemption threshold), silently corrupting state if code is relocated or single-stepped.
+- **Surgical Anti-Dump**: PE NT headers (`AddressOfEntryPoint`, NT signature, debug directories) are erased with `KUSER_SHARED_DATA` random entropy while DOS and section headers are preserved for OS and CRT loader stability.
+- **Formally Verified**: Backed by **30 Verus deductive mathematical theorems** (Z3 SMT solver) and **47 Bolero property-based fuzzing harnesses** with 100% verification pass rate across 125 tests.
 
-The system has been hardened with **Watchdog v2** and environment-adaptive scoring:
-
--   **Silent Poisoning (Watchdog v2)**: Replaced process termination with **Silent Data Poisoning**. If thread suspension is detected (via a debugger), the system corrupts internal cryptographic keys and suspicious seeds instead of killing the process.
--   **Adaptive Sensitivity**: Implemented a 5-second baseline threshold with **Heavy-Load Awareness** (doubles timeout to 10s during high CPU usage) to virtually eliminate false positives in laggy or virtualized environments.
--   **Hypervisor Optimization**: Refined CPUID and timing detection logic. The system now reports a stable **60 suspicion score** on Hyper-V environments, allowing the app to run safely while remaining vigilant.
--   **Entangled Execution (Anti-DBI/Anti-Trace)**: Integrated internal anchors into the VM execution loop. The decryption key is now mathematically bound to the code's memory location (RIP) and execution timing (Thread Cycles), silently corrupting the execution state if relocation or tracing is detected.
--   **Precision Anti-Dump**: Fixed stealth state verification to specifically monitor **NT Signature erasure**, ensuring protection even when DOS headers are preserved for stability.
+---
 
 ## Key Features
 
-| Feature | Implementation | Effect |
-| --- | --- | --- |
-| **Multi-Vector Detection** | VEH hooks, RDTSC timing, Hardware BP, PEB checks | Catches debugging from multiple angles simultaneously |
-| **Watchdog v2 (Liveness)** | Direct Syscall + Adaptive Thresholding | Detects suspension; triggers **Silent Poisoning** instead of exit [+] |
-| **Entangled Execution** | RIP Anchoring + Thread Cycle Heartbeat | Binds VM key to code location and timing; anti-DBI/anti-trace [+] |
-| **Randomized TinyVM** | Indirect Threading + Randomized V-Table | No switch/match; Helper addresses shuffled at runtime |
-| **Distributed Scoring** | 128-shard atomic scoring (Active/Decoy) | Memory manipulation is self-detecting; massive entropy dilution |
-| **Silent Corruption** | Token-based key poisoning | No crashes; just silently wrong results |
-| **Continuous Sharding** | sharded integrity + VM entanglement | PE modifications naturally break VM execution loop [+] |
-| **Surgical Anti-Dump** | Selective PE Header Corruption | Bypasses EDR hooks; wipes NT headers but keeps DOS for stability |
+| Feature | Implementation | Security Effect |
+|---|---|---|
+| **Multi-Vector Detection** | PEB dereference, RDTSC timing baseline, DR0–DR7 checks, driver blacklists | Detects debugging attempts across multiple hardware and OS vectors simultaneously |
+| **Watchdog v2 (Liveness)** | KUSER_SHARED_DATA InterruptTime + Adaptive Thresholding | Detects thread suspension; triggers **Silent Poisoning** instead of exit |
+| **Entangled Execution** | RIP Anchoring + Thread Cycle Heartbeat (2M threshold) | Binds VM decryption key to physical code location and timing; defeats DBI and tracing |
+| **Randomized TinyVM 2.0** | 256-Entry Indirect V-Table + Randomized LTP Permutation | No switch/match statements; opcode handler addresses shuffled at runtime via Xorshift32 |
+| **128-Shard Suspicion State** | Distributed Atomic State (64 Active / 64 Decoy) | Defeats memory freezing and data breakpoints; zeroing memory causes immediate score spike |
+| **Silent Key Poisoning** | Token-based non-linear key poisoning | No crashes; execution continues with poisoned cryptographic material |
+| **Surgical Anti-Dump** | Selective NT Header Obfuscation + 56-Byte Indirect Syscalls | Wipes NT signatures to defeat dumpers while maintaining OS/CRT loader stability |
+| **Master VEH 5-Phase Dispatch** | Preemptive Vectored Exception Handler with Call Frame Synthesis | Catches INT3, single-step, and guard page traps; redirects execution via valid x64 ABI frames |
+| **Formal Mathematical Proofs** | 30 Verus SMT theorems + 47 Bolero property-based harnesses | Formally proves memory safety, stack bounds, and golden ratio key bijection |
+
+---
 
 ## Quick Start
 
 ### Installation
 
-```rust
-// Cargo.toml
+The canonical Cargo package and library name is **`fuckDebug`**:
+
+```toml
+# Cargo.toml
 [dependencies]
-fdebug = { path = "./fdebug" }
-
-// main.rs
-use fdebug::protector::{Protector, get_dynamic_seed};
-
-fn main() {
-    let seed = get_dynamic_seed();  // Runtime-reconstructed from three sources
-    let protector = Protector::new(seed);
-    println!("[+] Anti-debug protection initialized");
-}
+fuckDebug = { path = "./fuckDebug" }
 ```
+
+> **Package Aliasing Note**: If your codebase prefers referencing the crate as `fdebug`, Cargo supports first-class package aliasing:
+> ```toml
+> [dependencies]
+> fdebug = { package = "fuckDebug", path = "./fuckDebug" }
+> ```
 
 ### Basic Usage
 
+The standard way to initialize the protection engine is via the `setup_anti_debug!` macro paired with `get_dynamic_seed()`:
+
 ```rust
-use fdebug::protector::{Protector, SecureVault, ShieldedExecution, get_dynamic_seed};
+use fuckDebug::protector::{setup_anti_debug, get_dynamic_seed, SecureVault, ShieldedExecution};
 
 fn main() {
+    // 1. Reconstruct dynamic seed from hardware and PE state, then initialize
     let seed = get_dynamic_seed();
-    let protector = Protector::new(seed);
+    let protector = setup_anti_debug!(seed);
+    println!("[+] fuckDebug protection initialized. Seed: 0x{:08X}", seed);
     
-    // Protect sensitive data
-    let api_key = SecureVault::new("sk_live_secret_key".to_string());
+    // 2. Protect sensitive credentials in a SecureVault
+    let api_key = SecureVault::new("sk_live_secret_production_token".to_string());
     
+    // 3. Access vaulted data through shielded execution
     let is_valid = protector.run_secure(&api_key, |key, token| {
-        // token is only valid in clean environment
-        key.len() == 18 && (token % 7) == 0
+        // 'token' is valid ONLY in an uncorrupted, debugger-free environment
+        key.len() > 10 && (token % 7) == 0
     });
     
     if is_valid {
-        println!("[+] API key validated");
+        println!("[+] Protected operation executed cleanly");
     } else {
-        eprintln!("[-] Running under debugger - data corrupted");
+        eprintln!("[-] Running under debugger or modified environment - data poisoned");
     }
 }
 ```
 
-### Advanced Pattern
+### Coupled Business Logic Pattern
 
 ```rust
-use fdebug::protector::{CoupledLogic, Corruptible, get_dynamic_seed};
+use fuckDebug::protector::{setup_anti_debug, get_dynamic_seed, CoupledLogic, Corruptible};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct PaymentData {
     amount: f64,
     valid: bool,
@@ -95,7 +107,7 @@ struct PaymentData {
 
 impl Corruptible for PaymentData {
     fn corrupt_if_needed(mut self, token: u64) -> Self {
-        if token == 0 {
+        if token == 0 || token.count_ones() > 16 {
             self.amount = 0.0;
             self.valid = false;
         }
@@ -103,399 +115,230 @@ impl Corruptible for PaymentData {
     }
 }
 
-let protector = Protector::new(get_dynamic_seed());
-let payment = protector.run_coupled(|token| {
-    PaymentData {
-        amount: 1000.0 + (token as f64 * 0.001),
-        valid: token != 0,
-    }
-});
+fn process_payment() -> PaymentData {
+    let protector = setup_anti_debug!(get_dynamic_seed());
+    
+    protector.run_coupled(|token| {
+        PaymentData {
+            amount: 1000.0 + (token as f64 * 0.001),
+            valid: token != 0,
+        }
+    })
+}
 
-// If debugged: amount = 0.0, valid = false
-// If clean: amount ≈ 1000.0, valid = true
+// In clean environment: amount ≈ 1000.0, valid = true
+// Under debugger: amount = 0.0, valid = false (silent corruption)
 ```
 
-## Documentation
+---
 
-Comprehensive documentation is available in the `/docs` directory:
+## Documentation Index
 
-### [DOC] [Advanced Integration Guide](docs/implementation_guide_NEW.md)
-Overview, integration checklist, threat model, and FAQ. **Start here if new to fdebug.**
+Authoritative, detailed documentation is located in the [`docs/`](docs/) directory:
 
-### [ARCH] [Architecture Guide](docs/architecture_guide_NEW.md)
-Deep technical analysis of all **five protection layers**:
-- **Layer 1**: Seed Orchestrator & Entropy Reconstruction [NEW]
-- **Layer 2**: Multi-Vector Detection System
-- **Layer 3**: Polymorphic Virtual Execution (TinyVM)
-- **Layer 4**: Distributed Suspicion Scoring & Integrity
-- **Layer 5**: Decoy System (Honey Pot Pattern)
+- 📖 **[Master Guide — Complete Integration Manual](docs/FDEBUG_COMPLETE_GUIDE.md)**: Exhaustive manual detailing all architecture layers, complete API signatures, design patterns, verification guides, and the defect remediation ledger. **Start here.**
+- 📐 **[Technical Architecture Guide](docs/architecture_guide_NEW.md)**: Deep technical analysis of the Five-Layer Concentric Defense Model, 128-shard active/decoy partition, and TinyVM 2.0 indirect threading.
+- ⚙️ **[API Reference Guide](docs/reference_guide_NEW.md)**: Full API documentation, function signatures, `SecureBuffer<N>` methods, and severity levels.
+- 🛠️ **[Implementation & Design Patterns Guide](docs/implementation_guide_NEW.md)**: Production implementation patterns (Shield, Sentinel, Checksum) and real-world licensing/credential use cases.
+- 🏗️ **[Build System & Entropy Customization Guide](docs/BUILD_GUIDE.md)**: Detailed analysis of `build.rs` compile-time seed generation and customization patterns.
+- 🔒 **[Seed Orchestrator Specification](docs/ARCHITECTURE_LAYER5.md)**: Technical specification of the three-shard runtime entropy reconstruction and MurmurHash3 finalizer.
+- 📝 **[Updates & Technical Changelog](docs/UPDATES.md)**: Chronological record of architectural enhancements, Watchdog v2, and the 17 remediated security defects.
 
-### [SEC] [Layer 1: Seed Orchestrator (Foundation)](docs/ARCHITECTURE_LAYER5.md) [NEW]
-Detailed explanation of runtime seed reconstruction:
-- Three entropy shards (Build-Time, Hardware, PE Integrity)
-- Avalanche mixing and XOR composition
-- Polymorphism across users and hardware
-- Performance characteristics (50-100μs first call, then cached)
-- Defense against static analysis and memory attacks
+---
 
-### [API] [API Reference Guide](docs/reference_guide_NEW.md)
-Complete API documentation with code examples:
-- Quick Start (updated with `get_dynamic_seed()`)
-- Core API Reference
-- Detection Severity Levels
-- Usage Patterns (5 essential patterns)
-- Advanced Configuration
-- Performance Characteristics
-- FAQ and Troubleshooting
-
-### [IMPL] [Implementation Guide](docs/implementation_guide_NEW.md)
-Best practices and design patterns:
-- Architectural Design Patterns (Shield, Sentinel, Checksum)
-- Integration Strategies
-- Real-World Use Cases (Licensing, API Keys, Data Protection)
-- Performance Optimization
-- Testing and Validation
-- Security Considerations
-- Troubleshooting Guide
-
-### [BUILD] [Build Guide - Custom Entropy Setup](docs/BUILD_GUIDE.md) [NEW]
-Complete guide for developers customizing the build system:
-- Understanding fdebug's three-shard entropy system
-- How `build.rs` generates Shard 1 (Build-Time Seed)
-- Five customization patterns (Deterministic, High-Entropy, Custom Secrets, etc.)
-- Integration with CI/CD pipelines
-- Best practices and troubleshooting
-- Real-world code examples with detailed comments
-
-### [LOG] [Documentation Updates Summary](docs/DOCUMENTATION_UPDATE_SUMMARY.md) [NEW]
-Complete changelog of recent updates:
-- Summary of Seed Orchestrator changes
-- Before/after code examples
-- All updated files and modifications
-- Integration points explained
-
-### [UPD] [Updates & Change Guide](docs/UPDATES.md) [NEW]
-Detailed technical guide for developers:
-- Code changes explained
-- Module structure
-- Testing validation
-- Consistency guidelines
-
-## Examples
-
-Complete working examples are in the `/examples` directory:
-
-- **basic_protection.rs** - Simple API key protection
-- **guarded_logic.rs** - Token-based financial calculations with corruption
-- **custom_vm_op.rs** - Guide to extending the VM with custom opcodes
-
-Run them:
-```bash
-cargo run --example basic_protection
-cargo run --example guarded_logic
-```
-
-## Architecture Overview
+## Five-Layer Concentric Architecture
 
 ```
 Application Layer
-    ↓ (uses run_secure, run_coupled, SecureVault)
-Protection Layer
-    ├─→ Layer 5: Decoy System (watchdog monitoring, honey traps)
-    ├─→ Layer 4: Integrity (distributed shards, SipHash verification)
-    ├─→ Layer 3: Obfuscation (polymorphic TinyVM, control flow flattening)
-    ├─→ Layer 2: Detection (VEH hooks, timing, hardware BP, PEB checks)
-    └─→ Layer 1: Entropy (Seed Orchestrator - runtime seed reconstruction)
+    │ (uses run_secure, run_coupled, SecureVault, dynamic_str!)
+    ▼
+Protection Engine
+    ├─→ Layer 5: Decentralized State & Silent Corruption
+    │     128 Atomic Shards (64 Active / 64 Decoy), Dynamic SipHash-2-4,
+    │     Dispersed Scattering, Soft Backoff Latency, Token Key Mutation
+    │
+    ├─→ Layer 4: Polymorphic Virtual Execution (TinyVM 2.0)
+    │     256-Entry Indirect V-Table, Randomized LTP Permutation Map,
+    │     Rolling Key Cipher, RIP Entanglement, Cycle Heartbeat (2M threshold)
+    │
+    ├─→ Layer 3: Memory Stealth, Master VEH & Anti-Dump
+    │     5-Phase Master Vectored Exception Handler, Synthetic x64 ABI Frames,
+    │     Surgical NT Header Erasure, 56-Byte Indirect Syscalls, Guard Page Traps
+    │
+    ├─→ Layer 2: Seed Orchestration & MurmurHash3 Key Derivation
+    │     Dynamic Seed Reconstruction: Avalanche(BUILD ^ HW ^ PE),
+    │     Thread-Safe OnceLock Caching, Golden Ratio Modular Inverse Invariance
+    │
+    └─→ Layer 1: Foundational Entropy & Detection Entanglement
+          Shard 1 (Build Seed), Shard 2 (CPUID Fingerprint), Shard 3 (PE Checksum),
+          PEB Dereference, Hardware Debug Registers (Dr0-Dr7), RDTSC Baseline, TLS
 ```
 
-## How It Works
+### 128-Shard Active/Decoy State (`global_state.rs`)
+Rather than relying on a centralized boolean flag (which can be easily modified with a single debugger breakpoint or memory write), suspicion is distributed across **128 atomic shards** (`AtomicU32`):
+- **64 Active Shards**: Contain real suspicion scores.
+- **64 Decoy Shards**: Contain high-entropy decoy noise mimicking real detections.
+- **Pair-Based Partitioning**: Shards are partitioned into 64 pairs `(2*i, 2*i+1)`. A 64-bit pair map derived from the dynamic seed designates which shard in each pair is Active.
+- **XOR Masking**: Each shard stores `(Score.rotate_left(i % 32)) ^ Mask_i`. Zeroing memory results in `0 ^ Mask = Mask`, generating an immediate score spike exceeding 500 points that trips the `0xFFFFFFFF` honeytrap.
+- **Dispersed Scattering**: Detections split suspicion points across 3 random active shards (`p1 + p2 + p3 = amount`) while injecting noise into 3 random decoy shards.
 
-### Layer 1: Seed Orchestrator (Foundation) [NEW]
+---
 
-**Runtime seed reconstruction from three entropy sources:**
+## Formal Verification & Testing Suite
 
-- **Build-Time Seed** (random per compilation): Each binary gets unique value
-- **Hardware Entropy** (CPU fingerprint): CPUID data makes seed hardware-specific  
-- **PE Integrity Hash** (code checksum): Any code modification invalidates seed
+`fuckDebug` incorporates a comprehensive formal verification suite located in `verification_suite/` combining deductive SMT proofs and property-based fuzzing.
 
-**Formula**: `FINAL_SEED = avalanche_mix(BUILD_SEED ^ HW_ENTROPY ^ PE_HASH)`
+### Verification Scorecard
 
-**Result**: 
-- No static keys to extract from memory
-- Each build gets unique opcode values
-- Same binary runs differently on different CPUs
-- Code patches instantly detected
-- Polymorphic per-user, per-hardware-platform
+| Suite / Harness Category | Total Tests | Pass Rate | Status |
+|---|---|---|---|
+| **Total Automated Tests** | **125** | **100% (125/125 Passed)** | **CLEAN** |
+| **Library & Bolero Property Harnesses** | 74 | 100% Passed | **CLEAN** |
+| **M1 Mathematical Invariant Challenges** | 17 | 100% Passed | **CLEAN** |
+| **M2 Empirical Challenge Harnesses** | 27 | 100% Passed | **CLEAN** |
+| **Module Concurrency & Shim Stress Tests** | 7 | 100% Passed | **CLEAN** |
+| **Defect Proofs Suite (`defect_proofs.rs`)** | 16 | 100% Passed | **CLEAN** |
+| **Verus Deductive SMT Theorems** | **30 + 2** | **100% (0 Admits)** | **DISCHARGED** |
 
-### Layer 2: Detection (Multi-Vector)
+### Running the Verification Suite
 
-### Layer 2: Detection (Multi-Vector)
-
-- **Vectored Exception Handling** catches INT3 and single-step exceptions
-- **Hardware Breakpoint Detection** monitors CPU debug registers (Dr0-Dr7)
-- **RDTSC Timing** detects execution delays from stepping/breakpoints
-- **PEB Memory Checks** read BeingDebugged and NtGlobalFlag flags
-- **Environment Detection** identifies virtual machines and cloud environments
-
-### Layer 3: Obfuscation (Polymorphic VM)
-
-- Custom bytecode VM with stack-based architecture using indirect threading
-- **Entangled Execution**: The VM loop is now "entangled" with the environment:
-  - **RIP Entanglement**: Binds the decryption key to the physical entry address. If code is relocated (typical of DBI tools), the key becomes invalid.
-  - **Thread Cycle Heartbeat**: Detects excessive CPU cycle consumption via `QueryThreadCycleTime`. Tracing or single-stepping triggers silent key corruption.
-- Control flow flattening converts sequential code into opaque state machines
-- Opcodes change every build (polymorphic - different per binary)
-- Derived from runtime-reconstructed seed via `auto_op!()` macro
-- Zero external dependencies (No `winapi`/`windows-rs`); uses manual FFI and inline assembly
-- Analysis tools (IDA, Ghidra) produce unusable output
-
-### Layer 4: Integrity (Distributed Scoring)
-
-- **128-Shard Atomic Architecture**: Suspicion score is split across 128 independent shards (64 Active, 64 Decoy).
-- **Active/Decoy Dilution**: Decoy shards store high-entropy "noise" while active shards track real detections, making state-freezing attacks exponentially harder.
-- **XOR Masking**: Each shard is masked with a build-time derived value; zeroing shards creates a massive score spike.
-- **VM Entanglement**: TinyVM decryption is mathematically tied to the sharded integrity hash; tampering breaks the VM loop.
-
-### Layer 5: Deception (Honey Pots)
-
-- Decoy functions explicitly exposed (easy to find)
-- Watchdog continuously monitors function bytecode
-- Patching detected instantly → DECOY_TAMPERED flag set
-- All future security tokens become corrupted
-- Attacker's "successful patch" silently corrupts everything
-
-## Performance
-
-Typical overhead: **3-5%** for average applications
-
-```
-Per-operation cost:    <1ms
-Heartbeat overhead:    <1ms every 10 operations
-Watchdog check:        <5ms probabilistically
-Startup cost:          ~1ms (VEH registration)
+#### Via PowerShell (Authoritative Runner):
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "verification_suite\run_verification.ps1"
 ```
 
-Optimizable: protect only critical operations, batch processes, etc.
-
-## Threat Model
-
-### [+] Defends Against
-
-- Software debuggers (WinDbg, x64dbg, IDA Debugger)
-- Automated analysis (IDA Pro, Ghidra, Binary Ninja)
-- Patch attacks (bytecode modification)
-- Hook attacks (IAT/EAT hooking)
-- Memory freezing (breakpoint data freezing)
-- Single-stepping attacks
-- DLL injection attempts
-
-### [-] Limitations
-
-- Kernel-mode debuggers have lower-level access
-- Hypervisor escapes may bypass some checks
-- Physical attacks (DMA, side-channels) out of scope
-- Source code availability doesn't help (polymorphic per-user)
-
-## Deployment
-
-Each build automatically generates a **unique runtime seed** reconstructed from three sources:
-
-```bash
-cargo build --release  
-# BUILD_SEED = random value (unique)
-# HW_ENTROPY = your CPU fingerprint
-# PE_HASH = your code checksum
-# FINAL_SEED = avalanche_mix(BUILD ^ HW ^ PE)
-
-cargo build --release  
-# BUILD_SEED = different random value!
-# (Even on same hardware, different binary)
+#### Via Windows Batch File:
+```cmd
+verification_suite\run_verification.bat
 ```
 
-**Result:** Version 1.0 exploits are useless against Version 1.1. Each user's binary is uniquely protected, and any code modification invalidates all security tokens.
+#### Via Cargo Directly:
+```cmd
+# Run all 125 verification tests:
+cargo test --manifest-path verification_suite/Cargo.toml -- --nocapture
 
-See [Seed Orchestrator Documentation](docs/ARCHITECTURE_LAYER5.md) for technical details.
+# Run the 16 defect proofs:
+cargo test --manifest-path verification_suite/Cargo.toml --test defect_proofs -- --nocapture
 
-## Configuration
-
-### Using the Runtime-Reconstructed Seed
-
-```rust
-use fdebug::protector::{Protector, get_dynamic_seed, get_dynamic_seed_u8};
-
-// Get 32-bit seed (reconstructed at runtime)
-let seed = get_dynamic_seed();
-let protector = Protector::new(seed);
-
-// Or use u8 variant if needed
-let seed_u8 = get_dynamic_seed_u8();
+# Run crate unit tests:
+cargo test --lib
 ```
 
-### Diagnostic Mode
+---
 
-```rust
-use fdebug::protector::global_state::DIAGNOSTIC_MODE;
-use std::sync::atomic::Ordering;
+## Security Audit & Remediated Defects Ledger
 
-DIAGNOSTIC_MODE.store(true, Ordering::Relaxed);
-// Logs which checkpoints trigger and their suspicion scores
-```
+During the Milestone 1 audit and Milestone 2 remediation phases, 17 cataloged architectural, memory-safety, and logic defects (`FLAW-01` through `FLAW-17`) were proven via formal Verus/Bolero defect tests and genuinely remediated:
 
-### Feature Flags
+- **FLAW-01 (TEB/PEB Dereference)**: Fixed inline assembly immediate folding `gs:[0x60 + 0x02]` to two-stage dereference loading `gs:[0x60]` into scratch register before reading `BeingDebugged` and `NtGlobalFlag`.
+- **FLAW-02 (DJB2/SipHash Divergence)**: Replaced mismatched 64-bit SipHash constant with `GOLDEN_MARKER_HASH` baseline, eliminating 100% false-positive tampering alarms.
+- **FLAW-03 (Environment Variable Bypass)**: Removed environment variable inspections (`RUSTUP_HOME`, `CARGO_MANIFEST_DIR`); check strictly governed by `cfg!(debug_assertions)`.
+- **FLAW-04 (Master VEH Guard Page Intercept)**: Updated VEH Phase 1 entry filter to intercept `STATUS_GUARD_PAGE_VIOLATION` regardless of address, routing heap guard page honeytraps.
+- **FLAW-05 (KUSER Watchdog Timestamp)**: Harmonized KUSER time source and implemented paired aligned 32-bit reads to eliminate unaligned 64-bit pointer panics.
+- **FLAW-06 (TinyVM Rolling Key Desynchronization)**: Removed mid-stream token mutation at `vip == 3`, preserving mathematical rolling key synchronization.
+- **FLAW-07 (Decoy Lazy Registration)**: Added eager `init_decoy_system()` during startup to reject pre-patched function hooks.
+- **FLAW-08 (Anti-Dump / PE Initialization Order)**: Preserved NT signature in header erasure and added eager `init_shard_table()` in `init_anti_dump()`.
+- **FLAW-09 (Indirect Syscall Stack Frame)**: Increased stack frame allocation to 56 bytes (`sub rsp, 0x38`), proven by Verus theorem `theorem_flaw09_syscall_stack_safety`.
+- **FLAW-10 (VEH Redirection Call Stack ABI)**: Synthesized authentic Windows x64 call frames (16-byte minus 8 RSP alignment, `safe_exit_stub` return address, 32-byte shadow space).
+- **FLAW-11 (Driver Buffer Slice Clamping)**: Clamped slice bounds with `(len as usize).min(buffer.len())` to prevent buffer overflow panics.
+- **FLAW-12 (Kernel Snapshot Handle Leak)**: Wrapped process snapshot handle in `CloseHandle(snapshot)` across all return paths in `is_terminal_context`.
+- **FLAW-13 (TinyVM Anti-Trace Preemption)**: Raised cycle threshold to `ANTI_TRACE_CYCLE_THRESHOLD = 2_000_000` to accommodate legitimate OS thread context switches.
+- **FLAW-14 (Dynamic SipHash Globals)**: Converted dead constants to `AtomicU64` and integrated dynamically into `recalculate_global_integrity`.
+- **FLAW-15 (Hypervisor Brand String Decoding)**: Corrected `MS_HV_ENCODED` to cleanly decode to `b"Microsoft Hv"`, exempting Windows VBS and WSL2 hosts.
+- **FLAW-16 (TinyVM Arithmetic Inversion)**: Resolved upstream false-positive score accumulation causes, verifying authentic arithmetic on clean systems.
+- **FLAW-17 (VEH Dead Code Cleanup)**: Removed developer conversational prompt comments and duplicate dead functions.
 
-```rust
-#[cfg(feature = "max-protection")]
-let protector = Protector::new(get_dynamic_seed());
-
-#[cfg(not(feature = "max-protection"))]
-let protector = DummyProtector::new();
-```
-
-## Building & Testing
-
-```bash
-# Build with protection (release)
-cargo build --release
-
-# Build without protection (debug/testing)
-cargo build
-
-# Run examples
-cargo run --example basic_protection
-cargo run --example guarded_logic
-
-# Run with diagnostics
-RUST_LOG=debug cargo run --release
-```
+---
 
 ## Module Structure
 
 ```
-src/protector/
-├── mod.rs                    # Main API & integration layer
-├── seed_orchestrator.rs      # Runtime seed reconstruction [NEW]
-├── hardware_entropy.rs       # Hardware fingerprint (Windows)
-├── pe_integrity.rs           # PE code section hash (Windows)
-├── anti_debug.rs             # Multi-vector detection (2300+ lines)
-├── global_state.rs           # Distributed scoring & integrity (667 lines)
-├── tiny_vm.rs                # Polymorphic VM bytecode (1169 lines)
-├── decoy_system.rs           # Honey pot functions (284 lines)
-└── tiny_vm/
-    └── generated_constants.rs
+fuckDebug/
+├── Cargo.toml                    # Crate definition (name = "fuckDebug")
+├── build.rs                      # Build-time random seed generator (Shard 1)
+├── src/
+│   ├── lib.rs                    # Library root export (pub mod protector)
+│   ├── main.rs                   # Entry point demonstration binary
+│   └── protector/
+│       ├── mod.rs                # Core Protector, SecureVault, CoupledLogic (802 lines)
+│       ├── seed_orchestrator.rs  # 3-shard dynamic seed reconstruction (263 lines)
+│       ├── hardware_entropy.rs   # CPUID processor fingerprinting (150 lines)
+│       ├── pe_integrity.rs       # PE section sharded checksumming (310 lines)
+│       ├── anti_debug.rs         # Multi-vector detection sensors (2170 lines)
+│       ├── anti_dump.rs          # Surgical header obfuscation & indirect syscalls (450 lines)
+│       ├── enhanced_veh.rs       # 5-phase master Vectored Exception Handler (280 lines)
+│       ├── global_state.rs       # 128-shard active/decoy state machine (972 lines)
+│       ├── tiny_vm.rs            # Indirect-threaded virtual machine 2.0 (1394 lines)
+│       └── decoy_system.rs       # Honey pot functions & watchdog prologue scanner (190 lines)
+├── verification_suite/           # Standalone Formal Verification Harness
+│   ├── Cargo.toml                # Verification crate dependencies (Bolero, Verus)
+│   ├── run_verification.ps1      # Authoritative PowerShell verification runner
+│   ├── run_verification.bat      # Windows CMD verification wrapper
+│   ├── src/
+│   │   ├── verus_proofs/         # 30 Verus deductive SMT theorems (Z3 solver)
+│   │   ├── bolero_harnesses/     # 47 Bolero property-based fuzzing harnesses
+│   │   └── shims/                # Test shims for internal component verification
+│   └── tests/
+│       ├── defect_proofs.rs      # 16 formal defect proofs for FLAW-01..16
+│       ├── m1_math_challenge.rs  # Mathematical boundary challenges
+│       ├── m2_bolero_challenge.rs# Empirical fuzzing challenges
+│       └── shim_stress.rs        # Multithreaded concurrency stress tests
+├── docs/                         # Comprehensive Technical Documentation
+│   ├── FDEBUG_COMPLETE_GUIDE.md  # Master integration & verification manual
+│   ├── architecture_guide_NEW.md # 5-layer architecture deep dive
+│   ├── reference_guide_NEW.md    # Complete API reference guide
+│   ├── implementation_guide_NEW.md# Design patterns & use cases
+│   ├── BUILD_GUIDE.md            # Build script customization guide
+│   ├── ARCHITECTURE_LAYER5.md    # Seed Orchestrator technical specification
+│   ├── UPDATES.md                # Technical changelog & remediation ledger
+│   └── README_UPDATES.md         # Documentation update summary
+└── examples/                     # Working code examples
+    ├── basic_protection.rs       # API key protection
+    ├── guarded_logic.rs          # Token-based financial calculations
+    ├── custom_vm_op.rs           # VM opcode extension guide
+    └── stealth_system.rs         # Memory stealth demonstration
 ```
 
-Total: ~4500+ lines of anti-debugging logic + Seed Orchestrator runtime reconstruction
+---
 
-## Compilation
+## Threat Model
 
-Only compiles on **Windows x86-64**:
-- Requires Windows API features
-- Uses inline x86 assembly
-- Non-Windows platforms get dummy implementations
+### Defends Against
+- Software debuggers (WinDbg, x64dbg, Visual Studio Debugger, IDA Pro Debugger).
+- Automated disassemblers & decompilers (IDA Pro, Ghidra, Binary Ninja).
+- Binary patch attacks (modifying `.text` bytes triggers PE checksum invalidation).
+- Dynamic binary instrumentation (DBI) frameworks (Frida, DynamoRIO via RIP and cycle entanglement).
+- Memory dumpers (Scylla, ProcDump, Dump-It via surgical NT header erasure).
+- In-memory state freezing and zeroing (128-shard active/decoy XOR mask trap).
+- Single-stepping and timing inspection attacks.
+- DLL injection attempts.
 
-```toml
-[target.'cfg(windows)'.dependencies]
-windows = { version = "0.51", features = [...] }
-```
-
-## Security Notes
-
-[!] **Important Security Considerations:**
-
-1. **No static secrets** - Runtime seed reconstruction means no hardcoded keys to find
-2. **Seed is hardware and build-specific** - `get_dynamic_seed()` changes based on CPU and code
-3. **Don't cache results** across protection boundaries - Always call `run_secure`/`run_coupled`
-4. **Validate tokens** before using them in calculations
-5. **Monitor suspicion scores** in production (enable diagnostic mode if needed)
-6. **Update regularly** - Each build gets new entropy automatically, defeating old exploits
-
-## Performance Tips
-
-```rust
-// [OK] GOOD - Single run_secure wrapping batch operation
-protector.run_secure(&vault, |data, token| {
-    data.iter().map(|x| process(x, token)).collect()
-})
-
-// [!] POOR - Separate run_secure per item
-for item in data {
-    protector.run_secure(&vault, |_, token| process(item, token))
-}
-```
-
-## FAQ
-
-**Q: Does it work in virtual machines?**
-A: Yes, it detects and adapts. VMs may trigger higher suspicion scores, but application still works. See [Detection Layer](docs/architecture_guide_NEW.md) for details.
-
-**Q: Can I use this in open-source projects?**
-A: Yes! It's MIT licensed. Even with source available, runtime-reconstructed polymorphic-per-user protection makes it effective.
-
-**Q: What about false positives?**
-A: Extremely rare. Enable diagnostic mode to identify causes. Usually legitimate VM/CI environments.
-
-**Q: Does performance matter?**
-A: For most applications, 3-5% overhead is negligible. Profile your specific use case. See [Performance](docs/reference_guide_NEW.md#performance-characteristics) section.
-
-**Q: How does the seed reconstruction work?**
-A: Three independent entropy sources are combined via XOR and avalanche mixing. See [Seed Orchestrator](docs/ARCHITECTURE_LAYER5.md) documentation for deep dive.
-
-**Q: Can someone just patch all the calls to run_secure?**
-A: They could modify your binary, but then PE_HASH changes. The next build has different entropy from that code patch - exploit fails.
-
-**Q: What if attackers know my source code?**
-A: The runtime seed is unique per user and per hardware. Even identical code produces different opcodes on different CPUs and builds. See [Polymorphism](docs/ARCHITECTURE_LAYER5.md#54-polymorphism-across-users-and-hardware) section.
-
-## License
-
-MIT License - See LICENSE file for details
-
-## Author
-
-Created by anhdeface aka Julian Kmut
-## Contributing
-
-This is a reference implementation of advanced anti-debugging techniques. It's suitable for:
-
-- Educational purposes (understand protection mechanisms)
-- Production protection (shipping with applications)
-- Security research (study evasion techniques)
-- Competition purposes (CTF challenges)
-
-Not suitable for:
-
-- Obfuscating malware (illegal)
-- Defeating legitimate security research
-- Preventing legitimate software updates
+### Limitations & Out of Scope
+- Kernel-mode debuggers with hardware hypervisor hooks (Ring -1 / Ring 0).
+- Physical hardware attacks (Direct Memory Access / DMA hardware sniffers, side-channel analysis).
 
 ---
 
 ## Quick Navigation
 
 | I want to... | Go to |
-| --- | --- |
-| **Learn about latest updates** | [LOG] [Documentation Updates Summary](docs/DOCUMENTATION_UPDATE_SUMMARY.md) |
-| **Understand Seed Orchestrator** | [SEC] [Layer 1: Seed Orchestrator (Foundation)](docs/ARCHITECTURE_LAYER5.md) |
-| **Customize the build system** | [BUILD] [Build Guide - Custom Entropy Setup](docs/BUILD_GUIDE.md) |
-| **Understand how fdebug works** | [ARCH] [Full Architecture Guide](docs/architecture_guide_NEW.md) |
-| **Use fdebug in my project** | [DOC] [Complete Integration Guide](docs/FDEBUG_COMPLETE_GUIDE.md) |
-| **See all API functions** | [API] [API Reference Guide](docs/reference_guide_NEW.md) |
-| **Learn best practices** | [IMPL] [Implementation Guide](docs/implementation_guide_NEW.md) |
-| **See working code** | [examples/](examples/) directory |
-| **Deploy to production** | [DOC] [Integration Guide - Deployment](docs/FDEBUG_COMPLETE_GUIDE.md#deployment-considerations) |
+|---|---|
+| **Read the complete master guide** | [Master Guide](docs/FDEBUG_COMPLETE_GUIDE.md) |
+| **Understand the 5-layer architecture** | [Architecture Guide](docs/architecture_guide_NEW.md) |
+| **Inspect all API functions & types** | [API Reference Guide](docs/reference_guide_NEW.md) |
+| **Implement design patterns & licensing** | [Implementation Guide](docs/implementation_guide_NEW.md) |
+| **Customize compile-time build entropy** | [Build Guide](docs/BUILD_GUIDE.md) |
+| **Understand dynamic seed reconstruction** | [Seed Orchestrator Spec](docs/ARCHITECTURE_LAYER5.md) |
+| **Inspect the 17 remediated flaw proofs** | [Remediation Ledger](docs/UPDATES.md) |
+| **Run the formal verification suite** | `verification_suite\run_verification.bat` |
+| **See working code examples** | [`examples/`](examples/) directory |
 
 ---
 
-## Start Here
+## License
 
-**New to fdebug?** Read in this order:
+MIT License — see [LICENSE](LICENSE) for details.
 
-1. [DOC] [Complete Integration Guide](docs/FDEBUG_COMPLETE_GUIDE.md) - 10 min overview
-2. [SEC] [Layer 1: Seed Orchestrator (Foundation)](docs/ARCHITECTURE_LAYER5.md) - Understand the foundation
-3. [ARCH] [Architecture Guide](docs/architecture_guide_NEW.md) - Deep technical analysis
-4. [examples/](examples/) - See working code
-5. [IMPL] [Implementation Guide](docs/implementation_guide_NEW.md) - Best practices
+## Author
 
----
-
-**Latest Update**: Runtime seed reconstruction from three entropy sources (Build-Time, Hardware, PE Integrity). See [SEC] [Layer 5](docs/ARCHITECTURE_LAYER5.md) for details.
+Created by anhdeface aka Julian Kmut. Formally verified & synchronized 2026.

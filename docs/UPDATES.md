@@ -186,7 +186,7 @@ The Seed Orchestrator feeds into multiple systems:
    - Integrity hash uses seed-dependent values
 
 3. **Shard Masks**
-   - `SHARD_MASKS[16]` derived from `get_dynamic_seed()`
+   - `SHARD_MASKS[128]` derived from `get_dynamic_seed()` (64 Active / 64 Decoy)
    - Each mask is unique to build and hardware
    - Lazy initialization on first access
 

@@ -104,15 +104,11 @@ fn detect_cloud_environment() -> bool {
 }
 
 /// Check if running in a safe development environment
-fn is_safe_development_environment() -> bool {
-    // Check for build mode and common development indicators
-    if detect_build_mode() == "debug" {
-        return true;
-    }
-    
-    // Check for common dev environment artifacts/env vars
-    std::env::var("CARGO_MANIFEST_DIR").is_ok() || 
-    std::env::var("RUSTUP_HOME").is_ok()
+pub fn is_safe_development_environment() -> bool {
+    // Check exclusively for compiler debug assertions; environment variables
+    // (such as RUSTUP_HOME or CARGO_MANIFEST_DIR) must never be trusted as
+    // bypass indicators in release binaries.
+    detect_build_mode() == "debug"
 }
 
 /// Detect build mode (debug/release)
@@ -370,9 +366,10 @@ static TIMING_WINDOW: [AtomicU64; 10] = [
 static WINDOW_INDEX: AtomicUsize = AtomicUsize::new(0);
 
 /// Check if process is running within terminal (powershell/cmd)
-fn is_terminal_context() -> bool {
-    use windows::Win32::System::Threading::{GetCurrentProcessId, OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
+pub fn is_terminal_context() -> bool {
+    use windows::Win32::System::Threading::GetCurrentProcessId;
     use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
+    use windows::Win32::Foundation::CloseHandle;
     
     unsafe {
         let pid = GetCurrentProcessId();
@@ -394,21 +391,29 @@ fn is_terminal_context() -> bool {
             } {}
         }
         
-        if parent_pid == 0 { return false; }
+        if parent_pid == 0 {
+            let _ = CloseHandle(snapshot);
+            return false;
+        }
         
+        let mut is_terminal = false;
         // Find parent name
         if Process32FirstW(snapshot, &mut entry).is_ok() {
-            while {
+            loop {
                 if entry.th32ProcessID == parent_pid {
                     let name = String::from_utf16_lossy(&entry.szExeFile);
                     let name_lower = name.to_lowercase();
-                    return name_lower.contains("powershell") || name_lower.contains("cmd.exe");
+                    is_terminal = name_lower.contains("powershell") || name_lower.contains("cmd.exe");
+                    break;
                 }
-                Process32NextW(snapshot, &mut entry).is_ok()
-            } {}
+                if !Process32NextW(snapshot, &mut entry).is_ok() {
+                    break;
+                }
+            }
         }
+        let _ = CloseHandle(snapshot);
+        is_terminal
     }
-    false
 }
 
 // ============================================================================
@@ -547,21 +552,18 @@ impl DetectionVector {
     fn check_peb_safety(&self) -> bool {
         // Use Windows API to safely check for debugger presence instead of direct PEB access
         // This prevents crashes from direct memory access and handles Windows updates properly
-        // Read PEB BeingDebugged flag using inline assembly
+        // Read genuine PEB pointer from TEB at gs:[0x60], then dereference PEB fields
         let being_debugged: u8;
-        unsafe {
-            std::arch::asm!(
-                "mov {}, gs:[0x60 + 0x02]",  // GS:[TEB.Peb] + 0x02 = PEB.BeingDebugged
-                out(reg_byte) being_debugged,
-                options(nostack, preserves_flags)
-            );
-        }
-        // Also check NtGlobalFlag indirectly
         let nt_global_flag: u32;
         unsafe {
+            let peb: *const u8;
             std::arch::asm!(
-                "mov {}, gs:[0x60 + 0xBC]",  // GS:[TEB.Peb] + 0xBC = PEB.NtGlobalFlag
-                out(reg) nt_global_flag,
+                "mov {peb}, gs:[0x60]",
+                "mov {out_dbg}, byte ptr [{peb} + 0x02]",
+                "mov {out_flg:e}, dword ptr [{peb} + 0xBC]",
+                peb = out(reg) peb,
+                out_dbg = out(reg_byte) being_debugged,
+                out_flg = out(reg) nt_global_flag,
                 options(nostack, preserves_flags)
             );
         }
@@ -701,59 +703,61 @@ pub fn checkpoint_memory_integrity() -> bool {
     // 6. ADD cả hai kết quả lại.
 
     let encryption_key = compute_encryption_key();
-    let memory_check_bytecode = [
+    let plain_bytecode = [
         // Step 1: PUSH PEB Address
-        VmOp::op_read_gs_offset() ^ encryption_key,
-        0x60 ^ encryption_key,  // GS:[0x60] = PEB pointer
+        VmOp::op_read_gs_offset(),
+        0x60,  // GS:[0x60] = PEB pointer
 
         // Step 2: DUP địa chỉ đó
-        VmOp::op_dup() ^ encryption_key,
+        VmOp::op_dup(),
 
         // Step 3: Dùng bản sao thứ nhất để đọc BeingDebugged
         // Load offset for BeingDebugged (0x02)
-        VmOp::op_load_imm() ^ encryption_key,
-        (0x02u64.to_le_bytes()[0]) ^ encryption_key,
-        (0x02u64.to_le_bytes()[1]) ^ encryption_key,
-        (0x02u64.to_le_bytes()[2]) ^ encryption_key,
-        (0x02u64.to_le_bytes()[3]) ^ encryption_key,
-        (0x02u64.to_le_bytes()[4]) ^ encryption_key,
-        (0x02u64.to_le_bytes()[5]) ^ encryption_key,
-        (0x02u64.to_le_bytes()[6]) ^ encryption_key,
-        (0x02u64.to_le_bytes()[7]) ^ encryption_key,
+        VmOp::op_load_imm(),
+        (0x02u64.to_le_bytes()[0]),
+        (0x02u64.to_le_bytes()[1]),
+        (0x02u64.to_le_bytes()[2]),
+        (0x02u64.to_le_bytes()[3]),
+        (0x02u64.to_le_bytes()[4]),
+        (0x02u64.to_le_bytes()[5]),
+        (0x02u64.to_le_bytes()[6]),
+        (0x02u64.to_le_bytes()[7]),
 
         // Add to get address of BeingDebugged field
-        VmOp::op_add() ^ encryption_key,
+        VmOp::op_add(),
 
         // Read 1 byte value from memory at that address (BeingDebugged flag)
-        VmOp::op_read_mem_u8() ^ encryption_key,
+        VmOp::op_read_mem_u8(),
 
         // Step 4: SWAP để đưa bản sao thứ hai lên đầu
-        VmOp::op_swap() ^ encryption_key,
+        VmOp::op_swap(),
 
         // Step 5: Dùng bản sao thứ hai để đọc NtGlobalFlag
         // Load offset for NtGlobalFlag (0xBC)
-        VmOp::op_load_imm() ^ encryption_key,
-        (0x0BCu64.to_le_bytes()[0]) ^ encryption_key,
-        (0x0BCu64.to_le_bytes()[1]) ^ encryption_key,
-        (0x0BCu64.to_le_bytes()[2]) ^ encryption_key,
-        (0x0BCu64.to_le_bytes()[3]) ^ encryption_key,
-        (0x0BCu64.to_le_bytes()[4]) ^ encryption_key,
-        (0x0BCu64.to_le_bytes()[5]) ^ encryption_key,
-        (0x0BCu64.to_le_bytes()[6]) ^ encryption_key,
-        (0x0BCu64.to_le_bytes()[7]) ^ encryption_key,
+        VmOp::op_load_imm(),
+        (0x0BCu64.to_le_bytes()[0]),
+        (0x0BCu64.to_le_bytes()[1]),
+        (0x0BCu64.to_le_bytes()[2]),
+        (0x0BCu64.to_le_bytes()[3]),
+        (0x0BCu64.to_le_bytes()[4]),
+        (0x0BCu64.to_le_bytes()[5]),
+        (0x0BCu64.to_le_bytes()[6]),
+        (0x0BCu64.to_le_bytes()[7]),
 
         // Add to get address of NtGlobalFlag
-        VmOp::op_add() ^ encryption_key,
+        VmOp::op_add(),
 
         // Read 4 byte value from memory at that address (NtGlobalFlag)
-        VmOp::op_read_mem_u32() ^ encryption_key,
+        VmOp::op_read_mem_u32(),
 
         // Step 6: ADD cả hai kết quả lại
-        VmOp::op_add() ^ encryption_key,
+        VmOp::op_add(),
 
         // Exit VM with result (top of stack)
-        VmOp::op_exit() ^ encryption_key,
+        VmOp::op_exit(),
     ];
+
+    let memory_check_bytecode = crate::protector::tiny_vm::encode_bytecode_array(&plain_bytecode, encryption_key);
 
     // Execute the bytecode in the VM with a context key
     let context_key = get_cpu_entropy() as u64; // Use entropy as context key
@@ -979,6 +983,11 @@ pub fn checkpoint_exception_handling() -> bool {
     detected
 }
 
+/// Encoded brand string for "Microsoft Hv" XOR 0x5A (FLAW-15)
+pub const MS_HV_ENCODED: [u8; 12] = [
+    0x17, 0x33, 0x39, 0x28, 0x35, 0x29, 0x35, 0x3C, 0x2E, 0x7A, 0x12, 0x2C,
+]; // "Microsoft Hv" XOR 0x5A
+
 /// Checkpoint 4: Hypervisor detection using multi-layered approach
 #[inline(always)]
 pub fn checkpoint_hypervisor_detection() -> bool {
@@ -1007,12 +1016,11 @@ pub fn checkpoint_hypervisor_detection() -> bool {
         brand_string[8..12].copy_from_slice(&edx.to_le_bytes());
     }
 
-    const MS_HV_ENCODED: [u8; 12] = [0x17, 0x03, 0x09, 0x18, 0x05, 0x1D, 0x05, 0x0C, 0x1E, 0x7A, 0x10, 0x1C]; // "Microsoft Hv" XOR 0x5A
     let brand_bytes = &brand_string;
     
     if contains_encoded_string(brand_bytes, &MS_HV_ENCODED, 0x5A) {
-        // Hyper-V detected. We add Medium suspicion but NOT Critical.
-        total_suspicion += 30; 
+        // Microsoft Hv represents standard Windows Hyper-V, VBS (Virtualization-Based Security),
+        // or WSL2 on clean machines. Do NOT penalize clean host virtualization.
     } else {
         // Check other brands (simplified)
         const VMWARE_ENCODED: [u8; 6] = [0x7C, 0x27, 0x1D, 0x04, 0x18, 0x0B]; // "VMware" XOR 0x5A
@@ -1077,6 +1085,9 @@ pub fn checkpoint_hypervisor_detection() -> bool {
     detected
 }
 
+/// Dedicated storage for the golden code marker hash
+pub static GOLDEN_MARKER_HASH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 /// Check for self-integrity by comparing current hash with golden hash
 pub fn checkpoint_integrity_self_hash() -> bool {
     if !ENABLE_INTEGRITY_CHECK {
@@ -1094,10 +1105,14 @@ pub fn checkpoint_integrity_self_hash() -> bool {
 
         let current_hash = calculate_runtime_hash(start_ptr, end_ptr);
 
-        // Compare with the stored integrity hash in the global state
-        let stored_hash = std::hint::black_box(GLOBAL_INTEGRITY_HASH.load(Ordering::SeqCst));
-
-        let tampered = u64::from(current_hash) != stored_hash;
+        let stored_hash = GOLDEN_MARKER_HASH.load(Ordering::SeqCst);
+        let tampered = if stored_hash == 0 {
+            // First time or startup initialization: record authentic baseline hash
+            GOLDEN_MARKER_HASH.store(current_hash, Ordering::SeqCst);
+            false
+        } else {
+            current_hash != stored_hash
+        };
 
         if tampered {
             add_suspicion(DetectionSeverity::High); // High suspicion for tampering
@@ -1981,7 +1996,8 @@ pub fn check_drivers() -> bool {
                 );
 
                 if len > 0 {
-                    let name_res = CStr::from_bytes_until_nul(&buffer[..len as usize + 1]);
+                    let slice_len = (len as usize).min(buffer.len());
+                    let name_res = CStr::from_bytes_until_nul(&buffer[..slice_len]);
                     if let Ok(cstr) = name_res {
                         if let Ok(name) = cstr.to_str() {
                             let name_lower = name.to_lowercase();
@@ -2102,10 +2118,11 @@ unsafe extern "system" fn tls_callback_entry(_image: *mut u8, reason: u32, _rese
         // Implement mandatory logic using OP_EARLY_BIRD across TinyVM
         let seed = crate::protector::seed_orchestrator::get_dynamic_seed();
         let enc_key = (seed & 0xFF) as u8;
-        let bytecode = [
-            VmOp::op_early_bird() ^ enc_key,
-            VmOp::op_exit() ^ enc_key
+        let plain_bytecode = [
+            VmOp::op_early_bird(),
+            VmOp::op_exit(),
         ];
+        let bytecode = crate::protector::tiny_vm::encode_bytecode_array(&plain_bytecode, enc_key);
         
         let result = vm_execute(&bytecode, enc_key, seed as u64);
         

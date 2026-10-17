@@ -210,11 +210,11 @@ pub static GLOBAL_VIRTUAL_MACHINE_KEY: AtomicU8 = AtomicU8::new(0x42);
 /// Mandatory for all future security token calculations
 pub static POISON_SEED: AtomicU64 = AtomicU64::new(0);
 
-// Dynamic SipHash constants that are initialized with dynamic seed
-static GLOBAL_SIPHASH_V0: AtomicU64 = AtomicU64::new(0);
-static GLOBAL_SIPHASH_V1: AtomicU64 = AtomicU64::new(0);
-static GLOBAL_SIPHASH_V2: AtomicU64 = AtomicU64::new(0);
-static GLOBAL_SIPHASH_V3: AtomicU64 = AtomicU64::new(0);
+// Dynamic SipHash constants that are initialized with dynamic seed (FLAW-14)
+pub static GLOBAL_SIPHASH_V0: AtomicU64 = AtomicU64::new(0);
+pub static GLOBAL_SIPHASH_V1: AtomicU64 = AtomicU64::new(0);
+pub static GLOBAL_SIPHASH_V2: AtomicU64 = AtomicU64::new(0);
+pub static GLOBAL_SIPHASH_V3: AtomicU64 = AtomicU64::new(0);
 
 // SipHash constants and state - now dynamic based on runtime seed
 const SIPHASH_C_ROUNDS: usize = 2;
@@ -253,23 +253,22 @@ pub fn recalculate_global_integrity() {
     let combined = (reconstruct_threat_score() as u64)
         .wrapping_add(GLOBAL_LAST_DECAY_TIME.load(Ordering::SeqCst));
 
-    // Use dynamic SipHash-like algorithm with dynamic seed for stronger integrity checking
-    let base_v0 = 0x736f6d6570736575u64;
-    let base_v1 = 0x646f72616e646f6du64;
-    let base_v2 = 0x6c7967656e657261u64;
-    let base_v3 = 0x7465646279746573u64;
+    // Ensure dynamic SipHash constants are initialized (FLAW-14)
+    let mut v0 = GLOBAL_SIPHASH_V0.load(Ordering::SeqCst);
+    let mut v1 = GLOBAL_SIPHASH_V1.load(Ordering::SeqCst);
+    let mut v2 = GLOBAL_SIPHASH_V2.load(Ordering::SeqCst);
+    let mut v3 = GLOBAL_SIPHASH_V3.load(Ordering::SeqCst);
 
-    // Mix the base values with dynamic seed to create dynamic constants
-    let seed = crate::protector::seed_orchestrator::get_dynamic_seed();
-    let dyn_v0 = base_v0 ^ (seed as u64);
-    let dyn_v1 = base_v1 ^ ((seed as u64) << 8);
-    let dyn_v2 = base_v2 ^ ((seed as u64) << 16);
-    let dyn_v3 = base_v3 ^ ((seed as u64) << 24);
+    if v0 == 0 && v1 == 0 && v2 == 0 && v3 == 0 {
+        initialize_dynamic_siphash();
+        v0 = GLOBAL_SIPHASH_V0.load(Ordering::SeqCst);
+        v1 = GLOBAL_SIPHASH_V1.load(Ordering::SeqCst);
+        v2 = GLOBAL_SIPHASH_V2.load(Ordering::SeqCst);
+        v3 = GLOBAL_SIPHASH_V3.load(Ordering::SeqCst);
+    }
 
-    let mut v0 = dyn_v0;
-    let mut v1 = dyn_v1;
-    let mut v2 = dyn_v2 ^ combined; // XOR with our data
-    let mut v3 = dyn_v3 ^ 8; // Length of data
+    v2 ^= combined; // XOR with our data
+    v3 ^= 8; // Length of data
 
     // Apply compression function
     siphash(&mut v0, &mut v1, &mut v2, &mut v3);
@@ -288,22 +287,22 @@ pub fn validate_global_integrity() -> bool {
     let combined = (reconstruct_threat_score() as u64)
         .wrapping_add(GLOBAL_LAST_DECAY_TIME.load(Ordering::SeqCst));
 
-    // Recalculate hash using same dynamic SipHash process
-    let base_v0 = 0x736f6d6570736575u64;
-    let base_v1 = 0x646f72616e646f6du64;
-    let base_v2 = 0x6c7967656e657261u64;
-    let base_v3 = 0x7465646279746573u64;
+    // Recalculate hash using same dynamic SipHash constants
+    let mut v0 = GLOBAL_SIPHASH_V0.load(Ordering::SeqCst);
+    let mut v1 = GLOBAL_SIPHASH_V1.load(Ordering::SeqCst);
+    let mut v2 = GLOBAL_SIPHASH_V2.load(Ordering::SeqCst);
+    let mut v3 = GLOBAL_SIPHASH_V3.load(Ordering::SeqCst);
 
-    let seed = crate::protector::seed_orchestrator::get_dynamic_seed();
-    let dyn_v0 = base_v0 ^ (seed as u64);
-    let dyn_v1 = base_v1 ^ ((seed as u64) << 8);
-    let dyn_v2 = base_v2 ^ ((seed as u64) << 16);
-    let dyn_v3 = base_v3 ^ ((seed as u64) << 24);
+    if v0 == 0 && v1 == 0 && v2 == 0 && v3 == 0 {
+        initialize_dynamic_siphash();
+        v0 = GLOBAL_SIPHASH_V0.load(Ordering::SeqCst);
+        v1 = GLOBAL_SIPHASH_V1.load(Ordering::SeqCst);
+        v2 = GLOBAL_SIPHASH_V2.load(Ordering::SeqCst);
+        v3 = GLOBAL_SIPHASH_V3.load(Ordering::SeqCst);
+    }
 
-    let mut v0 = dyn_v0;
-    let mut v1 = dyn_v1;
-    let mut v2 = dyn_v2 ^ combined; // XOR with our data
-    let mut v3 = dyn_v3 ^ 8; // Length of data
+    v2 ^= combined; // XOR with our data
+    v3 ^= 8; // Length of data
 
     siphash(&mut v0, &mut v1, &mut v2, &mut v3);
 
@@ -864,7 +863,7 @@ pub fn initialize_veh_protection() {
 }
 
 /// Initialize SipHash constants with dynamic values using runtime seed to make them non-standard
-fn initialize_dynamic_siphash() {
+pub fn initialize_dynamic_siphash() {
     // Use reconstructed seed to create dynamic initial values for SipHash
     // This makes the magic numbers polymorphic and harder to scan for
     let seed = crate::protector::seed_orchestrator::get_dynamic_seed() as u64;

@@ -77,6 +77,24 @@ pub fn init_master_veh() {
     });
 }
 
+/// Reference evaluation of VEH Phase 1 entry filtering with guard page exception preservation (FLAW-04)
+pub fn evaluate_veh_phase1(exc_addr: u64, rip: u64, text_start: u64, text_size: u64, exception_code: u32) -> i32 {
+    const EXCEPTION_CONTINUE_SEARCH: i32 = 0;
+    const EXCEPTION_INTERCEPTED: i32 = -1; // Proceeds to Phase 2..5
+
+    // STATUS_GUARD_PAGE_VIOLATION is 0x80000001
+    if exception_code == 0x80000001 {
+        return EXCEPTION_INTERCEPTED;
+    }
+
+    let text_end = text_start.saturating_add(text_size);
+    if (exc_addr < text_start || exc_addr >= text_end) && (rip < text_start || rip >= text_end) {
+        EXCEPTION_CONTINUE_SEARCH
+    } else {
+        EXCEPTION_INTERCEPTED
+    }
+}
+
 /// The MASTER VEH handler implementing the multi-phase protection logic
 unsafe extern "system" fn master_veh_handler(exception_info: *mut EXCEPTION_POINTERS) -> i32 {
     if exception_info.is_null() {
@@ -106,23 +124,29 @@ unsafe extern "system" fn master_veh_handler(exception_info: *mut EXCEPTION_POIN
     
     let exc_addr = record.ExceptionAddress as u64;
     let rip = context.Rip;
+    let exc_code = record.ExceptionCode as u32;
     
-    // Get trusted .text bounds from pe_integrity
-    if let Some((rva, size)) = get_text_section_bounds() {
-        let start = base_addr as u64 + rva as u64;
-        let end = start + size as u64;
-        
-        // Check ExceptionAddress
-        if exc_addr < start || exc_addr >= end {
-            // Check RIP as well (often same, but just in case of weird traps)
-            if rip < start || rip >= end {
-                // Exception from outside .text -> External code/hooks/system
-                return EXCEPTION_CONTINUE_SEARCH; 
+    // Guard page violations (0x80000001) from decoy honeytraps must NOT be dropped by Phase 1!
+    let is_guard_page = exc_code == 0x80000001;
+
+    if !is_guard_page {
+        // Get trusted .text bounds from pe_integrity
+        if let Some((rva, size)) = get_text_section_bounds() {
+            let start = base_addr as u64 + rva as u64;
+            let end = start + size as u64;
+            
+            // Check ExceptionAddress
+            if exc_addr < start || exc_addr >= end {
+                // Check RIP as well (often same, but just in case of weird traps)
+                if rip < start || rip >= end {
+                    // Exception from outside .text -> External code/hooks/system
+                    return EXCEPTION_CONTINUE_SEARCH; 
+                }
             }
+        } else {
+            // Validation data not ready, fail open to avoid crashing legitimate early exceptions
+            return EXCEPTION_CONTINUE_SEARCH;
         }
-    } else {
-        // Validation data not ready, fail open to avoid crashing legitimate early exceptions
-        return EXCEPTION_CONTINUE_SEARCH;
     }
 
     // ========================================================================
@@ -179,25 +203,36 @@ unsafe extern "system" fn master_veh_handler(exception_info: *mut EXCEPTION_POIN
     EXCEPTION_CONTINUE_SEARCH
 }
 
-// ... validate_stack_frames ... (keeping unchanged in this block if not needed, but simpler to just exclude from ReplacementContent if identical. Wait, I must provide contiguous block. validate_stack_frames can be outside the Replacement range or included.)
-// To be safe I will include validate_stack_frames signature if it needs to be viewed, but I can just target the logic above.
-// The task is to Rename functions.
-// I will include lines 68 to 291 approximately.
-
-// ... skipping validation helper bodies for brevity in ReplacementContent planning ...
-// Wait, I need to output `poison_thread_context` at the end logic.
+/// Graceful exit stub for redirected threads when decoy returns
+#[no_mangle]
+pub unsafe extern "system" fn safe_exit_stub() {
+    windows::Win32::System::Threading::ExitThread(0);
+}
 
 // Helper function (Phase 6 implementation)
-/// Phase 6: Silent Redirection & Poisoning
-unsafe fn poison_thread_context(context: &mut CONTEXT) -> i32 {
+/// Phase 6: Silent Redirection & Poisoning with Call Frame Synthesis (FLAW-10)
+pub unsafe fn poison_thread_context(context: &mut CONTEXT) -> i32 {
     // 1. Update Global State (Poisoning) via centralized function
     crate::protector::global_state::poison_encryption_on_dump_attempt();
     POISON_SEED.store(0xDEAD6666BEEF, Ordering::SeqCst);
     
-    // 2. Set RIP to Decoy
-    context.Rip = crate::protector::decoy_system::is_process_being_debugged as usize as u64;
+    // 2. Synthesize valid call frame on stack before redirection to prevent RET crash
+    // Windows x64 ABI requires:
+    // - RSP aligned to 16 bytes minus 8 on entry to called function
+    // - 32-byte shadow space ([Rsp+8..Rsp+32])
+    // - [Rsp] contains return address (pointing to safe_exit_stub)
+    let aligned_rsp = (context.Rsp & !0xFu64).wrapping_sub(0x28);
+    let ret_addr = safe_exit_stub as *const () as usize as u64;
+    let rsp_ptr = aligned_rsp as *mut u64;
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        ptr::write_volatile(rsp_ptr, ret_addr);
+    }));
+    context.Rsp = aligned_rsp;
+
+    // 3. Set RIP to Decoy function
+    context.Rip = crate::protector::decoy_system::is_process_being_debugged as *const () as usize as u64;
     
-    // 3. Set RAX to Poison Value (derived from VM Key)
+    // 4. Set RAX to Poison Value (derived from VM Key)
     let key = GLOBAL_VIRTUAL_MACHINE_KEY.load(Ordering::Relaxed) as u64;
     context.Rax = key.wrapping_mul(0xDEADBEEF);
     
@@ -313,20 +348,5 @@ unsafe fn verify_drx_integrity(context: &CONTEXT) -> bool {
     
     let result = vm_execute(&encoded, k, 0);
     result != 0
-}
-
-/// Phase 6: Silent Redirection
-unsafe fn initiate_silent_redirection(context: &mut CONTEXT) -> i32 {
-    // 1. Update Global State (Poisoning)
-    POISON_SEED.store(0xDEAD6666BEEF, Ordering::SeqCst);
-    
-    // 2. Set RIP to Decoy
-    context.Rip = crate::protector::decoy_system::is_process_being_debugged as usize as u64;
-    
-    // 3. Set RAX to Poison Value (derived from VM Key)
-    let key = GLOBAL_VIRTUAL_MACHINE_KEY.load(Ordering::Relaxed) as u64;
-    context.Rax = key.wrapping_mul(0xDEADBEEF);
-    
-    EXCEPTION_CONTINUE_EXECUTION
 }
 

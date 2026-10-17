@@ -1,15 +1,18 @@
-# Build Guide - Customizing fdebug for Your Project
+# Build Guide — Customizing fuckDebug for Your Project
 
 ## Overview
 
-The `build.rs` file is a Cargo build script that runs **before** compilation to generate runtime seed entropy. Understanding and customizing this file is essential for developers who want to tailor fdebug's anti-debug protection to their specific needs.
+The `build.rs` file is a Cargo build script that runs **before** compilation to generate runtime seed entropy. Understanding and customizing this file is essential for developers who want to tailor `fuckDebug`'s anti-debug protection to their specific needs.
+
+> **Crate Name Note**: The Cargo package and library name is `fuckDebug`. If you prefer to refer to it as `fdebug`, configure Cargo package aliasing in your `Cargo.toml`: `fdebug = { package = "fuckDebug", path = "..." }`.
 
 This guide explains:
-- How `build.rs` works with fdebug's Seed Orchestrator
+- How `build.rs` works with `fuckDebug`'s Seed Orchestrator (Layer 2)
 - How to customize entropy generation
 - How to integrate additional build-time secrets
 - Best practices for different deployment scenarios
 - Common customization patterns
+- Building and testing the formal verification suite (`verification_suite/`)
 
 ---
 
@@ -722,6 +725,32 @@ fn generate_random_seed_u32() -> u32 {
 
 ---
 
+## Building & Running the Formal Verification Suite
+
+`fuckDebug` includes an extensive formal verification harness in `verification_suite/` incorporating 30 Verus deductive mathematical theorems (discharged via the Z3 SMT solver) and 47 Bolero property-based fuzzing harnesses covering all 10 modules.
+
+### Running Verification via PowerShell (Recommended)
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "verification_suite\run_verification.ps1"
+```
+
+### Running Verification via Windows Batch File
+```cmd
+verification_suite\run_verification.bat
+```
+
+### Running Defect Proofs Directly via Cargo
+```cmd
+cargo test --manifest-path verification_suite/Cargo.toml --test defect_proofs -- --nocapture
+```
+
+### Running All 125 Verification Tests
+```cmd
+cargo test --manifest-path verification_suite/Cargo.toml -- --nocapture
+```
+
+---
+
 ## Summary
 
 **Key Takeaways:**
@@ -731,19 +760,22 @@ fn generate_random_seed_u32() -> u32 {
 3. **Multiple entropy sources** prevent seed prediction
 4. **Customization patterns** exist for different deployment scenarios
 5. **Best practices** ensure robust and secure builds
+6. **Formal verification** guarantees mathematical invariants and memory safety
 
 **Next Steps:**
 
 - Choose a customization pattern that fits your deployment model
 - Test reproducibility in your build environment
 - Document your entropy strategy for future maintainers
-- Monitor build logs to verify seed generation
+- Run the verification suite before shipping releases
 
 ---
 
 ## Additional Resources
 
-- [Architecture Guide - Seed Orchestrator (Layer 5)](ARCHITECTURE_LAYER5.md)
-- [API Reference - get_dynamic_seed()](reference_guide_NEW.md)
-- [Complete Integration Guide](FDEBUG_COMPLETE_GUIDE.md)
-- [Implementation Guide - Design Patterns](implementation_guide_NEW.md)
+- [Master Guide — Complete Integration Manual](FDEBUG_COMPLETE_GUIDE.md)
+- [Architecture Guide — Seed Orchestrator (Layer 2)](ARCHITECTURE_LAYER5.md)
+- [Full Architecture Guide — 5-Layer Model](architecture_guide_NEW.md)
+- [API Reference Guide](reference_guide_NEW.md)
+- [Implementation Guide — Design Patterns](implementation_guide_NEW.md)
+
