@@ -18,6 +18,7 @@ pub struct GoldenRatioDerivationEnsemble {
     pub seed: u32,
     pub score: u32,
     pub poison: u64,
+    pub poison_alt: u64,
 }
 
 // --- Independent Mathematical Reference Oracles ---
@@ -49,7 +50,7 @@ pub fn ref_golden_ratio_invert(derived: u64, score: u32, poison: u64) -> u64 {
     unpoisoned
 }
 
-/// Emulates Protector::encrypt_data logic (src/protector/mod.rs:205-214)
+/// Emulates Protector::encrypt_data logic (src/protector/mod.rs:209-221)
 pub fn sim_protector_encrypt(data: &[u8], key: u64, anti_debug_key: u8) -> Vec<u8> {
     let mut result = data.to_vec();
     if !result.is_empty() {
@@ -86,6 +87,23 @@ pub fn sim_corrected_decrypt(data: &[u8], key: u64, anti_debug_key: u8) -> Vec<u
     result
 }
 
+/// Buggy uncorrected decryption inverting vault transformation BEFORE stripping anti-debug XOR (DEF-03 defect)
+pub fn sim_uncorrected_decrypt(data: &[u8], key: u64, anti_debug_key: u8) -> Vec<u8> {
+    let mut result = data.to_vec();
+    // DEF-03 Buggy order: Invert vault transformation FIRST on unstripped ciphertext!
+    if !result.is_empty() {
+        for i in 0..std::cmp::min(8, result.len()) {
+            let shift = ((key >> (i * 2)) & 0x7) as u32;
+            result[i] = (result[i] ^ (key as u8)).rotate_right(shift);
+        }
+    }
+    // Step 2: Strip anti_debug XOR second
+    for byte in &mut result {
+        *byte ^= anti_debug_key;
+    }
+    result
+}
+
 // --- Bolero Property Tests ---
 
 /// Feature 37: Bolero Protector Golden Ratio Key Derivation Bijectivity & Invertibility
@@ -93,6 +111,7 @@ pub fn sim_corrected_decrypt(data: &[u8], key: u64, anti_debug_key: u8) -> Vec<u
 /// 1. The key derivation function is a strict bijection in Z_{2^64} for any fixed (score, poison).
 /// 2. Recovered base key via modular inverse 0xF1DE83E19937733D identically equals (seed ^ 0x61C8864680B583EB).
 /// 3. If score > 0, derived key strictly diverges from uncorrupted key.
+/// 4. Linear poison diffusion: derived_1 ^ derived_2 == poison_1 ^ poison_2 for identical (seed, score).
 #[test]
 fn prop_protector_golden_ratio_derivation_invertibility() {
     check!()
@@ -102,7 +121,7 @@ fn prop_protector_golden_ratio_derivation_invertibility() {
             let derived = ref_golden_ratio_derive(input.seed, input.score, input.poison);
             let recovered = ref_golden_ratio_invert(derived, input.score, input.poison);
 
-            // Invariant 1: Exact round-trip recovery
+            // Invariant 1: Exact round-trip recovery in Z_{2^64}
             assert_eq!(
                 recovered, expected_base,
                 "Golden ratio key derivation must be bijective and reversible via C_INV"
@@ -116,15 +135,25 @@ fn prop_protector_golden_ratio_derivation_invertibility() {
                     "Suspicion score > 0 must strictly alter derived transformation key"
                 );
             }
+
+            // Invariant 3: Linear poison diffusion
+            let derived_alt = ref_golden_ratio_derive(input.seed, input.score, input.poison_alt);
+            assert_eq!(
+                derived ^ derived_alt,
+                input.poison ^ input.poison_alt,
+                "Poison seed must exhibit perfect linear diffusion"
+            );
         });
 }
 
 /// Feature 36: SecureVault & DEF-03 Commutativity Defect Probing
 /// Invariant:
 /// 1. Corrected decryption ALWAYS restores plaintext (100% round-trip bijectivity).
-/// 2. Defect DEF-03: Under non-zero rotation shift (shift > 0) and non-trivial anti_debug_key
-///    (key != 0 and key != 0xFF), the target codebase decryption fails to restore plaintext.
-///    The test asserts and verifies this exact algebraic divergence.
+/// 2. Remediated sim_protector_decrypt matches corrected decryption and plaintext for 100% of inputs.
+/// 3. Defect DEF-03 Mathematical Proof:
+///    In uncorrected decryption, byte i (for i < 8) is corrupted by delta = (K_A >>> shift) ^ K_A.
+///    Whenever delta != 0 (which occurs whenever shift > 0 and K_A is not rotation-invariant),
+///    the uncorrected decryption strictly diverges from plaintext, proving DEF-03.
 #[test]
 fn prop_protector_vault_commutativity_defect_and_correction() {
     check!()
@@ -132,10 +161,8 @@ fn prop_protector_vault_commutativity_defect_and_correction() {
         .for_each(|input| {
             let ciphertext = sim_protector_encrypt(&input.plaintext, input.vault_key, input.anti_debug_key);
 
-            // Decryption with corrected inverse order:
-            let correct_decrypted = sim_corrected_decrypt(&ciphertext, input.vault_key, input.anti_debug_key);
-
             // Invariant 1: Corrected decryption is 100% bijective
+            let correct_decrypted = sim_corrected_decrypt(&ciphertext, input.vault_key, input.anti_debug_key);
             assert_eq!(
                 correct_decrypted, input.plaintext,
                 "Corrected decryption must perfectly round-trip for all inputs"
@@ -147,6 +174,48 @@ fn prop_protector_vault_commutativity_defect_and_correction() {
                 decrypted, input.plaintext,
                 "Remediated decrypt_data must perfectly round-trip for all inputs"
             );
+
+            // Invariant 3: DEF-03 Mathematical Defect Formal Proof
+            let uncorrected = sim_uncorrected_decrypt(&ciphertext, input.vault_key, input.anti_debug_key);
+            let limit = std::cmp::min(8, input.plaintext.len());
+
+            for i in 0..limit {
+                let shift = ((input.vault_key >> (i * 2)) & 0x7) as u32;
+                let delta = input.anti_debug_key.rotate_right(shift) ^ input.anti_debug_key;
+
+                // Algebraic proof: uncorrected[i] == plaintext[i] ^ delta
+                assert_eq!(
+                    uncorrected[i],
+                    input.plaintext[i] ^ delta,
+                    "DEF-03 algebraic formula uncorrected[i] == plaintext[i] ^ delta violated at byte {}",
+                    i
+                );
+
+                if delta != 0 {
+                    assert_ne!(
+                        uncorrected[i],
+                        input.plaintext[i],
+                        "DEF-03: Uncorrected composition must corrupt plaintext byte {} when delta != 0",
+                        i
+                    );
+                } else {
+                    assert_eq!(
+                        uncorrected[i],
+                        input.plaintext[i],
+                        "When delta == 0, uncorrected byte {} must match plaintext",
+                        i
+                    );
+                }
+            }
+
+            // Bytes beyond 8 are only XOR'd with anti_debug_key, so they commute
+            for i in limit..input.plaintext.len() {
+                assert_eq!(
+                    uncorrected[i],
+                    input.plaintext[i],
+                    "Bytes beyond 8 must commute because no rotation was applied"
+                );
+            }
         });
 }
 
@@ -165,25 +234,20 @@ fn test_isolated_protector_entry() {
 /// Feature 38: Bolero Protector Process Isolation Runner
 /// Invariant:
 /// Executing Protector::new in an isolated subprocess prevents known guard-page crash
-/// (0xc000041d) from terminating the primary test runner.
-/// The child process terminates with STATUS_FATAL_USER_CALLBACK_EXCEPTION (0xc000041d) due to DEF-01.
+/// from terminating the primary test runner.
+/// Eliminates one-shot bypass: Subprocess isolation executes across arbitrary seeds.
 #[test]
 fn prop_protector_subprocess_isolation() {
-    let mut executed = false;
+    let current_exe = std::env::current_exe().expect("Acquire test binary path");
     check!()
         .with_arbitrary::<u32>()
-        .for_each(|_seed| {
-            if executed {
-                return;
-            }
-            executed = true;
-
-            let current_exe = std::env::current_exe().expect("Acquire test binary path");
+        .for_each(|seed| {
             let output = Command::new(&current_exe)
                 .arg("bolero_harnesses::test_protector::test_isolated_protector_entry")
                 .arg("--nocapture")
                 .arg("--exact")
                 .env("FUCKDEBUG_SUBPROCESS_TEST", "1")
+                .env("FUCKDEBUG_TEST_SEED", seed.to_string())
                 .output();
 
             assert!(output.is_ok(), "Parent test runner failed to spawn isolated subprocess");

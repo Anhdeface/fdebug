@@ -5,7 +5,6 @@
 use arbitrary::Arbitrary;
 use bolero::check;
 use crate::protector::seed_orchestrator::{get_dynamic_seed, get_dynamic_seed_u8};
-use std::sync::Arc;
 use std::thread;
 
 /// Pure mathematical reference implementation of Murmur3 32-bit finalizer (fmix32)
@@ -57,40 +56,37 @@ fn prop_murmur3_finalizer_bijectivity_roundtrip() {
 
             if *input == 0 {
                 assert_eq!(forward, 0, "Murmur3 must map 0 to 0 (fixed point)");
+            } else {
+                assert_ne!(forward, *input, "Murmur3 produced identity fixed point for non-zero {:#X}", input);
             }
         });
 }
 
-/// Feature 15: Strict Avalanche Criterion (SAC)
-/// Verifies that single-bit flips produce non-zero divergence (bijectivity)
-/// and that bit diffusion across input permutations satisfies SAC (mean ~16 bits in [12.0, 20.0]).
+/// Feature 15: Strict Avalanche Criterion (SAC) & Differential Non-Cancellation
+/// Verifies that single-bit flips produce non-zero divergence (bijectivity),
+/// double-bit perturbations never cancel out,
+/// and bit diffusion across input permutations satisfies SAC (mean ~16 bits in [12.0, 20.0]).
 #[test]
 fn prop_murmur3_avalanche_bit_diffusion() {
     check!()
-        .with_arbitrary::<(u32, u8)>()
-        .for_each(|(x, bit_pos)| {
-            let bit = (bit_pos % 32) as usize;
-            let flipped = *x ^ (1u32 << bit);
+        .with_arbitrary::<(u32, u8, u8)>()
+        .for_each(|(x, b1_raw, b2_raw)| {
+            let b1 = (b1_raw % 32) as usize;
+            let b2 = (b2_raw % 32) as usize;
 
             let y1 = ref_avalanche_mix(*x);
-            let y2 = ref_avalanche_mix(flipped);
+            let y_b1 = ref_avalanche_mix(*x ^ (1u32 << b1));
+            let diff1 = y1 ^ y_b1;
+            assert_ne!(diff1, 0, "Murmur3 bijectivity violated on 1-bit flip");
 
-            let diff = y1 ^ y2;
-            let hamming_distance = diff.count_ones();
+            // Non-cancellation of 2-bit flip
+            if b1 != b2 {
+                let y_b12 = ref_avalanche_mix(*x ^ (1u32 << b1) ^ (1u32 << b2));
+                assert_ne!(y_b12, y1, "Double-bit flip cancelled out to original");
+                assert_ne!(y_b12, y_b1, "Double-bit flip failed to diverge from single-bit flip");
+            }
 
-            // 1. Bijectivity guarantees that flipping 1 bit strictly produces a distinct output (diff != 0)
-            assert!(
-                diff != 0,
-                "Avalanche violation: flipping bit {} of {:#X} produced zero output difference",
-                bit, x
-            );
-            assert!(
-                hamming_distance >= 1,
-                "Weak avalanche effect: flipping bit {} of {:#X} changed 0 bits",
-                bit, x
-            );
-
-            // 2. Strict Avalanche Criterion (SAC): ensemble mean bit diffusion across all 32 single-bit flips
+            // SAC ensemble mean bit diffusion across all 32 single-bit flips
             let total_bits: u32 = (0..32)
                 .map(|b| {
                     let y_b = ref_avalanche_mix(*x ^ (1u32 << b));
@@ -106,71 +102,143 @@ fn prop_murmur3_avalanche_bit_diffusion() {
         });
 }
 
-/// Feature 14: Dynamic Seed Caching & u8 Compression Invariant
-/// Verifies:
-/// 1. get_dynamic_seed() is non-zero and stable.
-/// 2. get_dynamic_seed_u8() == XOR fold of all 4 bytes of get_dynamic_seed().
+/// Feature 14: Dynamic Seed Caching & u8 Projection Homomorphism Invariant
+/// Mathematical Invariants of pi: Z_{2^32} -> Z_{2^8}:
+/// 1. Surjectivity: Pre-image existence for all target bytes.
+/// 2. Parity preservation theorem: popcount(v) % 2 == popcount(pi(v)) % 2.
+/// 3. Byte-wise linear homomorphism: pi(v ^ (b << 8k)) == pi(v) ^ b.
+/// 4. Dynamic seed caching consistency and stability.
 #[test]
 fn prop_seed_orchestrator_caching_and_u8_compression() {
     check!()
-        .with_arbitrary::<u8>()
-        .for_each(|_iter| {
-            let seed_32 = get_dynamic_seed();
-            let seed_u8 = get_dynamic_seed_u8();
+        .with_arbitrary::<(u32, u8)>()
+        .for_each(|(arb_seed, target_byte)| {
+            let pi = |v: u32| -> u8 {
+                let b0 = (v & 0xFF) as u8;
+                let b1 = ((v >> 8) & 0xFF) as u8;
+                let b2 = ((v >> 16) & 0xFF) as u8;
+                let b3 = ((v >> 24) & 0xFF) as u8;
+                b0 ^ b1 ^ b2 ^ b3
+            };
 
-            assert_ne!(seed_32, 0, "Dynamic seed must be strictly non-zero");
+            // 1. Surjectivity: every target byte has a valid pre-image in Z_{2^32}
+            let preimage = *target_byte as u32;
+            assert_eq!(pi(preimage), *target_byte, "Projection pi failed surjectivity");
 
-            let b0 = (seed_32 & 0xFF) as u8;
-            let b1 = ((seed_32 >> 8) & 0xFF) as u8;
-            let b2 = ((seed_32 >> 16) & 0xFF) as u8;
-            let b3 = ((seed_32 >> 24) & 0xFF) as u8;
-            let expected_u8 = b0 ^ b1 ^ b2 ^ b3;
+            // 2. Parity preservation theorem: popcount(v) % 2 == popcount(pi(v)) % 2
+            let pop_v = arb_seed.count_ones() % 2;
+            let pop_pi = (pi(*arb_seed).count_ones()) % 2;
+            assert_eq!(pop_v, pop_pi, "Parity preservation theorem violated for {:#X}", arb_seed);
 
-            assert_eq!(seed_u8, expected_u8, "get_dynamic_seed_u8 diverged from byte XOR folding");
+            // 3. Byte-wise linear homomorphism: pi(v ^ (b << 8k)) == pi(v) ^ b
+            for k in 0..4 {
+                let shifted = (*target_byte as u32) << (k * 8);
+                assert_eq!(
+                    pi(*arb_seed ^ shifted),
+                    pi(*arb_seed) ^ *target_byte,
+                    "Byte-wise linear homomorphism violated at shift {}", k
+                );
+            }
+
+            // 4. Live orchestrator cache invariant and temporal consistency
+            let s1 = get_dynamic_seed();
+            let s2 = get_dynamic_seed();
+            assert_ne!(s1, 0, "Dynamic seed must be strictly non-zero");
+            assert_eq!(s1, s2, "Dynamic seed must remain stable across calls");
+            let s_u8 = get_dynamic_seed_u8();
+            assert_eq!(s_u8, pi(s1), "get_dynamic_seed_u8 diverged from projection pi(get_dynamic_seed())");
         });
 }
 
-/// Feature 14: Multi-Source XOR Entropy Combination Soundness
-/// Invariant: XOR combination is strictly commutative and associative,
-/// and perturbation of any shard propagates non-zero change.
+/// Feature 14: 3-Shard Entropy Pipeline (BUILD_SEED ^ HW_ENTROPY ^ PE_HASH)
+/// Invariants:
+/// 1. Shard symmetry: Any permutation of shards yields identical final seed.
+/// 2. Total shard sensitivity: Perturbing any shard propagates non-zero divergence.
+/// 3. Strict avalanche propagation: Single-bit flip propagates across fmix32 with high diffusion.
 #[test]
 fn prop_multi_source_xor_commutativity_and_sensitivity() {
     check!()
-        .with_arbitrary::<(u32, u32, u32, u32)>()
-        .for_each(|(s1, s2, s3, delta)| {
-            // Commutativity
-            let c1 = s1 ^ s2 ^ s3;
-            let c2 = s2 ^ s3 ^ s1;
-            let c3 = s3 ^ s1 ^ s2;
-            assert_eq!(c1, c2, "XOR combination non-commutative (c1 != c2)");
-            assert_eq!(c2, c3, "XOR combination non-commutative (c2 != c3)");
+        .with_arbitrary::<(u32, u32, u32, u32, u8)>()
+        .for_each(|(s1, s2, s3, delta, bit_pos)| {
+            let entropy_pipeline = |a: u32, b: u32, c: u32| -> u32 {
+                ref_avalanche_mix(a ^ b ^ c)
+            };
 
-            // Sensitivity
+            let base = entropy_pipeline(*s1, *s2, *s3);
+
+            // 1. Total shard symmetry across permutations
+            assert_eq!(base, entropy_pipeline(*s2, *s3, *s1), "Entropy pipeline permutation s2,s3,s1 failed");
+            assert_eq!(base, entropy_pipeline(*s3, *s1, *s2), "Entropy pipeline permutation s3,s1,s2 failed");
+            assert_eq!(base, entropy_pipeline(*s1, *s3, *s2), "Entropy pipeline permutation s1,s3,s2 failed");
+            assert_eq!(base, entropy_pipeline(*s2, *s1, *s3), "Entropy pipeline permutation s2,s1,s3 failed");
+            assert_eq!(base, entropy_pipeline(*s3, *s2, *s1), "Entropy pipeline permutation s3,s2,s1 failed");
+
+            // 2. Total shard sensitivity: perturbing ANY shard by non-zero delta strictly changes output
             if *delta != 0 {
-                let perturbed = (s1 ^ delta) ^ s2 ^ s3;
-                assert_ne!(perturbed, c1, "XOR combination insensitive to shard perturbation");
+                assert_ne!(entropy_pipeline(s1 ^ delta, *s2, *s3), base, "Insensitive to shard 1 perturbation");
+                assert_ne!(entropy_pipeline(*s1, s2 ^ delta, *s3), base, "Insensitive to shard 2 perturbation");
+                assert_ne!(entropy_pipeline(*s1, *s2, s3 ^ delta), base, "Insensitive to shard 3 perturbation");
             }
+
+            // 3. Strict avalanche propagation: flipping 1 bit in any shard propagates non-zero difference
+            let bit = (bit_pos % 32) as usize;
+            let bit_mask = 1u32 << bit;
+            let perturbed_1 = entropy_pipeline(s1 ^ bit_mask, *s2, *s3);
+            let diff = base ^ perturbed_1;
+            assert_ne!(diff, 0, "Single-bit shard perturbation produced zero output difference");
+
+            // 4. Ensemble mean bit diffusion across all 32 single-bit shard flips is in [12.0, 20.0]
+            let total_flips: u32 = (0..32)
+                .map(|b| {
+                    let p = entropy_pipeline(s1 ^ (1u32 << b), *s2, *s3);
+                    (base ^ p).count_ones()
+                })
+                .sum();
+            let mean_diff = total_flips as f64 / 32.0;
+            assert!(
+                mean_diff >= 12.0 && mean_diff <= 20.0,
+                "Entropy pipeline SAC mean diffusion violated: {} (expected 12.0..20.0)",
+                mean_diff
+            );
         });
 }
 
-/// Feature 14: Multi-Threaded OnceLock Idempotency
-/// Invariant: 16 concurrent threads repeatedly querying get_dynamic_seed()
-/// receive identical results without data races.
+#[derive(Arbitrary, Debug, Clone)]
+pub struct ThreadTraceConfig {
+    pub thread_count_raw: u8,
+    pub iters_raw: u8,
+}
+
+/// Feature 14: Multi-Threaded OnceLock Idempotency & Concurrency Invariants
+/// Invariant: Concurrently executing threads querying get_dynamic_seed() and get_dynamic_seed_u8()
+/// receive identical results without data races or initialization divergences.
 #[test]
 fn prop_seed_orchestrator_multithreaded_idempotency() {
-    let reference_seed = get_dynamic_seed();
-    let mut handles = Vec::new();
+    check!()
+        .with_arbitrary::<ThreadTraceConfig>()
+        .for_each(|config| {
+            let thread_count = (config.thread_count_raw % 15) as usize + 2; // 2..16 threads
+            let iters = (config.iters_raw % 30) as usize + 10; // 10..40 iterations
 
-    for _ in 0..16 {
-        handles.push(thread::spawn(move || {
-            for _ in 0..100 {
-                let s = get_dynamic_seed();
-                assert_eq!(s, reference_seed, "Concurrent thread observed different reconstructed seed");
+            let reference_seed = get_dynamic_seed();
+            let reference_u8 = get_dynamic_seed_u8();
+            assert_ne!(reference_seed, 0);
+
+            let mut handles = Vec::with_capacity(thread_count);
+
+            for _ in 0..thread_count {
+                handles.push(thread::spawn(move || {
+                    for _ in 0..iters {
+                        let s = get_dynamic_seed();
+                        let u = get_dynamic_seed_u8();
+                        assert_eq!(s, reference_seed, "Thread observed divergent dynamic seed");
+                        assert_eq!(u, reference_u8, "Thread observed divergent dynamic seed u8");
+                    }
+                }));
             }
-        }));
-    }
 
-    for h in handles {
-        h.join().expect("Worker thread panicked in OnceLock idempotency test");
-    }
+            for h in handles {
+                h.join().expect("Worker thread panicked in OnceLock idempotency test");
+            }
+        });
 }

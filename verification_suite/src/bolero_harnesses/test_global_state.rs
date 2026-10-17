@@ -5,10 +5,51 @@
 use arbitrary::Arbitrary;
 use bolero::check;
 use crate::protector::global_state::{
-    get_shard_mask, initialize_veh_protection, recalculate_global_integrity,
-    validate_global_integrity, GLOBAL_INTEGRITY_HASH,
+    get_shard_mask, get_suspicion_score, initialize_veh_protection,
+    recalculate_global_integrity, reconstruct_threat_score, validate_global_integrity,
+    DetectionSeverity, GLOBAL_INTEGRITY_HASH, SUSPICION_SHARDS,
 };
 use std::sync::atomic::Ordering;
+use std::sync::Mutex;
+
+static SUITE_MUTEX: Mutex<()> = Mutex::new(());
+
+/// RAII Guard to preserve and restore global state during tests that mutate static atomics
+struct GlobalStateRestoreGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    shards: [u32; 128],
+    integrity_hash: u64,
+    last_decay: u64,
+}
+
+impl GlobalStateRestoreGuard {
+    fn acquire() -> Self {
+        let lock = SUITE_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let mut shards = [0u32; 128];
+        for i in 0..128 {
+            shards[i] = SUSPICION_SHARDS[i].load(Ordering::SeqCst);
+        }
+        let integrity_hash = GLOBAL_INTEGRITY_HASH.load(Ordering::SeqCst);
+        let last_decay = crate::protector::global_state::GLOBAL_LAST_DECAY_TIME.load(Ordering::SeqCst);
+        Self {
+            _lock: lock,
+            shards,
+            integrity_hash,
+            last_decay,
+        }
+    }
+}
+
+impl Drop for GlobalStateRestoreGuard {
+    fn drop(&mut self) {
+        for i in 0..128 {
+            SUSPICION_SHARDS[i].store(self.shards[i], Ordering::SeqCst);
+        }
+        GLOBAL_INTEGRITY_HASH.store(self.integrity_hash, Ordering::SeqCst);
+        crate::protector::global_state::GLOBAL_LAST_DECAY_TIME.store(self.last_decay, Ordering::SeqCst);
+        recalculate_global_integrity();
+    }
+}
 
 /// Independent pure reference for 64-bit pair map generation
 #[inline(always)]
@@ -36,8 +77,11 @@ pub fn is_active_shard_ref(index: usize, pair_map: u64) -> bool {
 }
 
 /// Feature 18 & 19: 128-Shard Active/Decoy Exact 64/64 Partition Invariant
-/// Invariant: For every pair (2k, 2k+1), exactly one shard is active and one is decoy.
-/// Total active shards across all 128 shards is identically 64.
+/// Invariants:
+/// 1. For every pair (2k, 2k+1), exactly one shard is active and one is decoy (mutual exclusion).
+/// 2. Total active shards across all 128 shards is identically 64.
+/// 3. Total decoy shards across all 128 shards is identically 64.
+/// 4. Distinct dynamic seeds generate distinct partition pair maps.
 #[test]
 fn prop_shard_partition_exact_64_active_64_decoy() {
     check!()
@@ -63,122 +107,185 @@ fn prop_shard_partition_exact_64_active_64_decoy() {
             // Invariant 2: Total exact count
             assert_eq!(active_count, 64, "Active shards != 64 for seed {:#X}", seed);
             assert_eq!(decoy_count, 64, "Decoy shards != 64 for seed {:#X}", seed);
+
+            // Invariant 3: Bitwise partition sensitivity
+            if *seed != 0 {
+                let perturbed_map = mix_seed_to_u64_ref(seed ^ 0x55555555);
+                assert_ne!(pair_map, perturbed_map, "Distinct seeds produced identical pair maps");
+            }
         });
 }
 
-/// Feature 18: Additive Scattering Conservation Invariant
-/// Feature 18: Additive Scattering Invariant & Strict Non-Negativity
-/// When suspicion amount is scattered across 3 shards using weights w1, w2, w3:
+/// Feature 18: Additive Scattering Conservation & Suspicion Mesh Isolation
 /// Invariants:
-/// 1. Partial sum p1 + p2 <= amount
-/// 2. Individual bounds p1, p2, p3 <= amount
-/// 3. If amount >= total_w, every part is strictly positive.
+/// 1. Real suspicion addition increases reconstruct_threat_score() by exact severity (or scaled debug severity).
+/// 2. Decoy shard noise camouflage does not corrupt reconstruct_threat_score().
+/// 3. Threat score is strictly monotonic non-decreasing upon additions.
+/// 4. Dynamic SipHash integrity is automatically re-synchronized and remains coherent.
 #[test]
 fn prop_additive_scattering_conservation_math() {
     check!()
-        .with_arbitrary::<(u32, u8, u8, u8)>()
-        .for_each(|(amount, w1_raw, w2_raw, w3_raw)| {
-            if *amount == 0 || *amount > 100_000 {
-                return;
-            }
+        .with_arbitrary::<u8>()
+        .for_each(|sev_idx| {
+            let _guard = GlobalStateRestoreGuard::acquire();
+            initialize_veh_protection();
 
-            let w1 = (*w1_raw as u32 % 32) + 1;
-            let w2 = (*w2_raw as u32 % 32) + 1;
-            let w3 = (*w3_raw as u32 % 32) + 1;
-            let total_w = w1 + w2 + w3;
+            let score_before = reconstruct_threat_score();
 
-            let p1 = (*amount * w1) / total_w;
-            let p2 = (*amount * w2) / total_w;
-            
-            // Invariant 1: sum of first two parts never exceeds total amount
-            assert!(p1 + p2 <= *amount, "Partial weights exceeded total amount: p1+p2 > amount");
+            let severity = match sev_idx % 4 {
+                0 => DetectionSeverity::Low,
+                1 => DetectionSeverity::Medium,
+                2 => DetectionSeverity::High,
+                _ => DetectionSeverity::Critical,
+            };
 
-            let p3 = *amount - p1 - p2;
+            crate::protector::global_state::add_suspicion(severity);
+            let score_after = reconstruct_threat_score();
 
-            // Invariant 2: Individual bounds
-            assert!(p1 <= *amount && p2 <= *amount && p3 <= *amount);
+            // Invariant 1: Monotonic strictly positive increase
+            assert!(
+                score_after > score_before,
+                "Threat score failed to increase on add_suspicion (before={}, after={})",
+                score_before, score_after
+            );
 
-            // Invariant 3: If amount >= total_w, every part is non-zero
-            if *amount >= total_w {
-                assert!(p1 > 0, "p1 was zero despite amount >= total_w");
-                assert!(p2 > 0, "p2 was zero despite amount >= total_w");
-                assert!(p3 > 0, "p3 was zero despite amount >= total_w");
-            }
+            // Invariant 2: Additive conservation matching debug/release scaling
+            let expected_added = if cfg!(debug_assertions) {
+                let mut amt = severity.score() / 2;
+                if amt == 0 { amt = 1; }
+                amt
+            } else {
+                severity.score()
+            };
+            assert_eq!(
+                score_after.saturating_sub(score_before),
+                expected_added,
+                "Additive conservation violated for severity {:?}", severity
+            );
+
+            // Invariant 3: SipHash integrity coherence after addition
+            assert!(
+                validate_global_integrity(),
+                "Dynamic SipHash integrity invalidated after genuine suspicion addition"
+            );
         });
 }
 
 /// Feature 19: Zero-Memory Self-Defense Honeytrap Invariant
-/// If an attacker or hypervisor zeroes all shard memory (shards = 0),
-/// the reconstructed score exceeds the honeytrap ceiling of 500, triggering maximum alarm 0xFFFFFFFF.
+/// Invariants:
+/// 1. If an attacker zeroes out the 128 suspicion shards, the reconstructed score
+///    exceeds the 500 threshold due to rotating unmasked non-zero masks.
+/// 2. get_suspicion_score() immediately returns 0xFFFFFFFF (tampering alarm).
 #[test]
 fn prop_zero_memory_self_defense_honeytrap() {
     check!()
         .with_arbitrary::<u32>()
         .for_each(|seed| {
-            let pair_map = mix_seed_to_u64_ref(*seed);
-            let mut zeroed_score: u32 = 0;
+            let _guard = GlobalStateRestoreGuard::acquire();
+            initialize_veh_protection();
 
+            // Zero out all 128 suspicion shards (simulating debugger or memory-scrub attack)
             for i in 0..128 {
-                if is_active_shard_ref(i, pair_map) {
-                    let mask = get_shard_mask(i);
-                    // Encoded value is 0 => decoded is 0 ^ mask = mask
-                    let val_i = mask.rotate_right(i as u32 % 32);
-                    zeroed_score = zeroed_score.wrapping_add(val_i);
-                }
+                SUSPICION_SHARDS[i].store(0, Ordering::SeqCst);
             }
 
-            // Invariant: Reconstructed score on zeroed memory is massive (> 500)
+            // Invariant 1: Reconstructed score exceeds honeytrap ceiling (> 500)
+            let zeroed_threat = reconstruct_threat_score();
             assert!(
-                zeroed_score > 500,
-                "Zero-memory score was {} (expected > 500) for seed {:#X}",
-                zeroed_score, seed
+                zeroed_threat > 500,
+                "Zero-memory threat score was {} (expected > 500) for seed {:#X}",
+                zeroed_threat, seed
+            );
+
+            // Invariant 2: get_suspicion_score emits maximum alarm 0xFFFFFFFF
+            let alarm_score = get_suspicion_score();
+            assert_eq!(
+                alarm_score, 0xFFFFFFFF,
+                "get_suspicion_score failed to emit 0xFFFFFFFF alarm under zero-memory attack"
             );
         });
 }
 
-/// Shard encoding and decoding round-trip identity
+/// Feature 18: Shard Encoding and Decoding Round-Trip Identity
+/// Invariant: Across all 128 shard positions and arbitrary 32-bit values:
+/// decode_i(encode_i(v, mask_i), mask_i) == v.
+/// When v == 0, encoded value is mask_i != 0 (tamper resistance).
 #[test]
 fn prop_shard_encoding_roundtrip_identity() {
     check!()
-        .with_arbitrary::<(u32, u32, usize)>()
-        .for_each(|(val, mask, idx)| {
-            let shift = (*idx % 32) as u32;
+        .with_arbitrary::<(u32, usize)>()
+        .for_each(|(val, idx_raw)| {
+            let idx = idx_raw % 128;
+            let mask = get_shard_mask(idx);
+            let shift = (idx % 32) as u32;
+
             let encoded = val.rotate_left(shift) ^ mask;
             let decoded = (encoded ^ mask).rotate_right(shift);
-            assert_eq!(decoded, *val, "Shard encoding/decoding roundtrip failed");
+
+            // Invariant 1: Exact roundtrip reconstruction
+            assert_eq!(decoded, *val, "Shard encoding roundtrip failed at index {}", idx);
+
+            // Invariant 2: Non-zero encoded value for zero score
+            if *val == 0 {
+                assert_eq!(encoded, mask, "Encoded 0 score must equal raw mask");
+                assert_ne!(encoded, 0, "Shard mask at index {} must be strictly non-zero", idx);
+            }
         });
 }
 
-/// Feature 20: SipHash Dynamic Integrity Arbitrary Bit-Flip Fuzzing
+/// Feature 20: SipHash Dynamic Integrity Multi-Dimensional Tampering Verification
+/// Invariants:
 /// 1. Freshly recalculated global integrity validates as true.
-/// 2. Perturbing arbitrary bit in 64-bit hash strictly fails validation.
-/// 3. Restored hash validates as true again.
+/// 2. Perturbing any arbitrary bit in 64-bit hash strictly fails validation.
+/// 3. Modifying active shard contents directly strictly fails validation.
+/// 4. Modifying decoy shard contents does not break integrity (decoy isolation).
+/// 5. Restored state validates as true again.
 #[test]
 fn prop_global_integrity_siphash_validation_roundtrip() {
     check!()
-        .with_arbitrary::<u8>()
-        .for_each(|bit_idx| {
+        .with_arbitrary::<(u8, u8)>()
+        .for_each(|(bit_idx, shard_raw)| {
+            let _guard = GlobalStateRestoreGuard::acquire();
             initialize_veh_protection();
             recalculate_global_integrity();
             assert!(validate_global_integrity(), "Freshly recalculated global integrity must validate as true");
 
-            // Perturb arbitrary bit in 64-bit hash
+            // 1. Perturb arbitrary bit in 64-bit integrity hash
             let mask = 1u64 << (bit_idx % 64);
             GLOBAL_INTEGRITY_HASH.fetch_xor(mask, Ordering::SeqCst);
-            let corrupted_valid = validate_global_integrity();
-            
-            // Invariant: Corrupted hash must fail validation
-            assert!(!corrupted_valid, "Tampered integrity hash (bit {}) passed validation", bit_idx % 64);
-
-            // Restore hash -> must succeed
+            assert!(!validate_global_integrity(), "Tampered integrity hash (bit {}) passed validation", bit_idx % 64);
             GLOBAL_INTEGRITY_HASH.fetch_xor(mask, Ordering::SeqCst);
-            assert!(validate_global_integrity(), "Restored integrity hash must validate as true");
+            assert!(validate_global_integrity(), "Restored integrity hash failed validation");
+
+            // 2. Direct active shard memory tampering detection
+            let seed = crate::protector::seed_orchestrator::get_dynamic_seed();
+            let pair_map = mix_seed_to_u64_ref(seed);
+            let pair = (shard_raw % 64) as usize;
+            let active_bit = ((pair_map >> pair) & 1) as usize;
+            let active_shard_idx = pair * 2 + active_bit;
+            assert!(is_active_shard_ref(active_shard_idx, pair_map));
+
+            SUSPICION_SHARDS[active_shard_idx].fetch_xor(0x1337C0DE, Ordering::SeqCst);
+            assert!(!validate_global_integrity(), "Direct active shard tampering at index {} went undetected", active_shard_idx);
+            SUSPICION_SHARDS[active_shard_idx].fetch_xor(0x1337C0DE, Ordering::SeqCst);
+            assert!(validate_global_integrity(), "Restored active shard failed validation");
+
+            // 3. Decoy shard isolation: tampering with decoy shard does not affect active threat score or fail integrity
+            let decoy_shard_idx = pair * 2 + (1 - active_bit);
+            assert!(!is_active_shard_ref(decoy_shard_idx, pair_map));
+            SUSPICION_SHARDS[decoy_shard_idx].fetch_xor(0x1337C0DE, Ordering::SeqCst);
+            assert!(validate_global_integrity(), "Decoy shard tampering improperly affected integrity validation");
+            SUSPICION_SHARDS[decoy_shard_idx].fetch_xor(0x1337C0DE, Ordering::SeqCst);
+            assert!(validate_global_integrity(), "Restored decoy shard failed validation");
         });
 }
 
-/// Feature 21: Bolero Global State Time Decay Math & Saturation Bounds
-/// Score decays monotonically: score' = score.saturating_sub(5 * (elapsed / 300)).
-/// Bounded strictly at 0 from below.
+/// Feature 21: Bolero Global State Time Decay Math & Invariant Bounds
+/// Invariants:
+/// 1. Sub-300s elapsed time produces zero decay.
+/// 2. Exact decay rate: 5 points per full 300s interval.
+/// 3. Saturation: bounded strictly at 0 from below.
+/// 4. Remainder preservation: elapsed % 300 is preserved without truncation drift.
 #[test]
 fn prop_time_decay_math_bounds() {
     check!()
@@ -205,5 +312,13 @@ fn prop_time_decay_math_bounds() {
                     "Decay rate diverged from 5 points per 300s"
                 );
             }
+
+            // Invariant 4: Fractional remainder conservation
+            let remainder = elapsed_seconds % 300;
+            assert_eq!(
+                elapsed_seconds - remainder,
+                decay_intervals * 300,
+                "Decay interval time conservation violated"
+            );
         });
 }
