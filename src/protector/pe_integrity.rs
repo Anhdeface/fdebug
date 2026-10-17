@@ -27,6 +27,15 @@ use crate::protector::global_state::POISON_SEED;
 /// 0xDEAD... pattern used for initialization
 pub static INTEGRITY_TOKEN: AtomicU64 = AtomicU64::new(0xDEADBEEFCAFEBABE);
 
+/// Inert Anchor Buffer placed at the start of PE .text section
+///
+/// Ensures that RVA offset 0 of `.text` is populated by inert NOP sleds [0x90; 1024]
+/// instead of critical runtime routines (such as the global heap allocator `alloc_impl_runtime`).
+/// This preserves process memory stability during continuous live memory integrity audits.
+#[used]
+#[link_section = ".text$AAA"]
+pub static INERT_TEXT_ANCHOR: [u8; 1024] = [0x90; 1024];
+
 /// Size of each shard in bytes (1KB)
 const SHARD_SIZE: usize = 1024;
 
@@ -116,6 +125,9 @@ fn fnv1a_hash(data: &[u8]) -> u32 {
 ///
 /// **Returns**: True if successful, False if PE parsing fails.
 pub unsafe fn init_shard_table() -> bool {
+    // Reference inert text anchor to guarantee inclusion and link order preservation
+    std::hint::black_box(&INERT_TEXT_ANCHOR);
+
     // 1. Get Module Base
     let base = GetModuleHandleW(ptr::null());
     if base.is_null() { return false; }
@@ -151,6 +163,14 @@ pub unsafe fn init_shard_table() -> bool {
     }
     
     if text_rva == 0 || text_size == 0 { return false; }
+    
+    // Align text_rva with INERT_TEXT_ANCHOR to ensure RVA text_rva lands on inert NOP buffer
+    let anchor_ptr = INERT_TEXT_ANCHOR.as_ptr();
+    let anchor_rva = (anchor_ptr as usize - base as usize) as u32;
+    if anchor_rva >= text_rva && anchor_rva < text_rva + text_size {
+        text_size = (text_rva + text_size).saturating_sub(anchor_rva);
+        text_rva = anchor_rva;
+    }
     
     // 6. Calculate Hashes for each Shard
     let text_ptr = base.offset(text_rva as isize);

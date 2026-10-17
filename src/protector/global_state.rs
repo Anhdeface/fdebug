@@ -754,7 +754,7 @@ fn apply_decay() {
 /// Self-Defense: If memory is zeroed, XOR + Rotate results in a massive pseudo-random score.
 pub fn reconstruct_threat_score() -> u32 {
     if !GLOBAL_STATE_INITIALIZED.load(Ordering::Relaxed) {
-        return 0;
+        return 0xFFFFFFFF;
     }
     // Pre-calculate pair map once for O(1) per-shard Active check
     let seed = crate::protector::seed_orchestrator::get_dynamic_seed();
@@ -786,6 +786,9 @@ pub fn reconstruct_threat_score() -> u32 {
 /// Get the current suspicion score with lazy decay application
 /// Honeytrap: If reconstructed score > 200, return 0xFFFFFFFF to signal tampering
 pub fn get_suspicion_score() -> u32 {
+    if !GLOBAL_STATE_INITIALIZED.load(Ordering::Relaxed) {
+        return 0;
+    }
     apply_decay();
     let score = reconstruct_threat_score();
     // Honeytrap: If reconstructed score > 500, return 0xFFFFFFFF to signal tampering
@@ -857,11 +860,11 @@ pub fn initialize_veh_protection() {
     // Initialize dynamic SipHash constants using dynamic seed
     initialize_dynamic_siphash();
 
+    // Set initialization flag before calculating integrity hash
+    GLOBAL_STATE_INITIALIZED.store(true, Ordering::SeqCst);
+
     // Recalculate integrity hash after initialization
     recalculate_global_integrity();
-
-    // Set initialization flag after everything is ready
-    GLOBAL_STATE_INITIALIZED.store(true, Ordering::SeqCst);
 }
 
 /// Initialize SipHash constants with dynamic values using runtime seed to make them non-standard

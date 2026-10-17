@@ -11,7 +11,7 @@
 //! 3. **PE Integrity Hash**: Code section checksum for anti-tampering
 //! 
 //! **Shard Recomposition**:
-//! ```
+//! ```text
 //! FINAL_SEED = Avalanche(BUILD_SEED ^ HW_ENTROPY ^ PE_HASH)
 //! ```
 //! 
@@ -68,7 +68,7 @@ impl SeedOrchestrator {
     /// Compute the seed by combining all entropy shards
     /// 
     /// **Shard Composition**:
-    /// ```
+    /// ```text
     /// Shard 1: BUILD_TIME_SEED  (compile-time constant)
     /// Shard 2: HW_ENTROPY       (CPUID-based fingerprint)
     /// Shard 3: PE_INTEGRITY     (.text section checksum)
@@ -128,7 +128,7 @@ impl SeedOrchestrator {
     /// **Purpose**: Ensure that changes to any input bit affect all output bits
     /// 
     /// **Algorithm** (MurmurHash3 finalizer):
-    /// ```
+    /// ```text
     /// x ^= x >> 16
     /// x *= 0x85ebca6b
     /// x ^= x >> 13
@@ -172,7 +172,7 @@ impl SeedOrchestrator {
 /// **Usage**: This function replaces all uses of the old `DYNAMIC_SEED` constant
 /// 
 /// **Example**:
-/// ```rust
+/// ```text
 /// // Old code:
 /// let key = DYNAMIC_SEED ^ some_value;
 /// 
@@ -192,7 +192,7 @@ pub fn get_dynamic_seed() -> u32 {
 /// We take the XOR of all 4 bytes to compress to u8
 /// 
 /// **Compression**:
-/// ```
+/// ```text
 /// byte0 ^ byte1 ^ byte2 ^ byte3
 /// ```
 #[inline(always)]
