@@ -515,7 +515,7 @@ fn get_random_decoy_indices_3(pair_map: u64) -> (usize, usize, usize) {
     entropy ^= &stack_var as *const i32 as u64;
     
     // Use different multiplier for decoy selection
-    let mut rng = entropy.wrapping_mul(0xDEADBEEFCAFEBABE);
+    let mut rng = entropy.wrapping_mul(0xDEADBEEFCAFEBABF);
     let mut next_decoy = || {
         loop {
             rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
@@ -661,18 +661,18 @@ fn apply_decay() {
     if current_time <= last_time_val { return; }
 
     // We only update if enough time has passed for at least 1 decay interval (300s)
-    if current_time - last_time_val < 300 { return; }
+    let elapsed = current_time - last_time_val;
+    let decay_intervals = elapsed / 300;
+    if decay_intervals == 0 { return; }
+
+    let new_last_decay_time = last_time_val + decay_intervals * 300;
 
     // CAS to update time. Only one thread succeeds.
-    if GLOBAL_LAST_DECAY_TIME.compare_exchange(last_time_val, current_time, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+    if GLOBAL_LAST_DECAY_TIME.compare_exchange(last_time_val, new_last_decay_time, Ordering::SeqCst, Ordering::SeqCst).is_err() {
         return; // Lost race
     }
     
-    let elapsed = current_time - last_time_val;
-    let decay_intervals = elapsed / 300;
-    let total_decay = (decay_intervals as u32) * 5; // 5 points per interval
-
-    if total_decay == 0 { return; }
+    let total_decay = (decay_intervals as u32).saturating_mul(5); // 5 points per interval
 
     // Get pair map for Active/Decoy determination
     let seed = crate::protector::seed_orchestrator::get_dynamic_seed();
@@ -744,6 +744,8 @@ fn apply_decay() {
             }
         }
     }
+
+    recalculate_global_integrity();
 }
 
 /// Reconstruct the total threat score from distributed ACTIVE shards
@@ -775,7 +777,7 @@ pub fn reconstruct_threat_score() -> u32 {
         // Prevent compiler optimization/const-folding with black_box
         let finalized_value = std::hint::black_box(value_i);
         
-        total_score = total_score.wrapping_add(finalized_value);
+        total_score = total_score.saturating_add(finalized_value);
     }
     
     total_score

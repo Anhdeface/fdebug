@@ -233,9 +233,16 @@ pub fn heartbeat_check(seed: u32) -> u64 {
     let mut token = INTEGRITY_TOKEN.load(Ordering::Relaxed);
     
     if current_hash == reference_hash {
-        // MATCH: Evolve the token
-        // Token = Token.rotate(1) ^ Hash
-        token = token.rotate_left(1) ^ (current_hash as u64);
+        // MATCH: Evolve the token via non-linear ARX / SplitMix diffusion
+        // Prevents linear differential cancellation: for any delta_1 != 0,
+        // delta_2 = delta_1 <<< 1 cannot cancel the perturbation.
+        let mut mixed = (token.rotate_left(13) ^ (current_hash as u64)).wrapping_mul(0x9E3779B97F4A7C15);
+        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D049BB133111EB);
+        token = mixed ^ (mixed >> 31);
+        if token == 0 || token == 0xDEAD_DEAD_DEAD_DEAD {
+            token ^= 0x1337_C0DE_5A5A_A5A5;
+        }
         INTEGRITY_TOKEN.store(token, Ordering::Relaxed);
         
         // Update Watchdog Timestamp
@@ -257,8 +264,15 @@ pub fn heartbeat_check(seed: u32) -> u64 {
         // Silent Defense: Poison the global seed to cause future crashes
         POISON_SEED.fetch_add(0xBAD_C0DE_DEAD_1337, Ordering::Relaxed);
         
-        // Return a corrupted token to break VM decryption immediately
-        token = token ^ 0xBAAD_F00D_CAFE_BABE;
+        // Non-involutory trap-state evolution: guarantees f(f(T)) != T,
+        // preventing consecutive tamper events from restoring clean token state.
+        token = (token ^ 0xBAAD_F00D_CAFE_BABE)
+            .rotate_left(13)
+            .wrapping_mul(0x517CC1B727220A95)
+            .wrapping_add(1);
+        if token == 0 || token == 0xDEAD_DEAD_DEAD_DEAD {
+            token ^= 0x1337_C0DE_5A5A_A5A5;
+        }
         INTEGRITY_TOKEN.store(token, Ordering::Relaxed);
     }
     

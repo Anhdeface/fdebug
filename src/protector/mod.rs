@@ -145,7 +145,7 @@ where
         }
 
         // Use a default token value on non-Windows
-        let default_token = 0x12345678ABCDEF00u64;
+        let default_token = CANONICAL_CLEAN_TOKEN;
 
         // Execute the operation with the token
         // The operation closure receives the security token as an argument
@@ -605,6 +605,10 @@ where
     }
 }
 
+/// Canonical clean transformation key derived from clean dynamic seed and unpoisoned environment:
+/// Key = (DYNAMIC_SEED ^ 0x61C8864680B583EB) ^ (DYNAMIC_SEED ^ 0xCAFEBABE1337BEEF) = 0xAB363CF893823D04
+pub const CANONICAL_CLEAN_TOKEN: u64 = 0xAB363CF893823D04;
+
 /// Trait for types that can be silently corrupted based on protector state
 pub trait Corruptible {
     fn corrupt_if_needed(self, token: u64) -> Self;
@@ -641,9 +645,8 @@ impl Corruptible for String {
         // Apply Soft Corruption (Delay)
         apply_soft_corruption(score);
 
-        // Apply Hard Corruption if score > 100 or token indicates debug (legacy check)
-        let corruption_factor = token.count_ones() as usize;
-        if score > 100 || corruption_factor > 16 {
+        // Apply Hard Corruption if score > 100 or token indicates tampering/corruption
+        if score > 100 || (token ^ CANONICAL_CLEAN_TOKEN) != 0 {
             let mut s = self;
             if !s.is_empty() {
                 let idx = (token % s.len() as u64) as usize;
@@ -678,8 +681,7 @@ impl Corruptible for Vec<u8> {
         apply_soft_corruption(score);
 
         // Apply Hard Corruption
-        let corruption_factor = token.count_ones() as usize;
-        if score > 100 || corruption_factor > 16 {
+        if score > 100 || (token ^ CANONICAL_CLEAN_TOKEN) != 0 {
             let mut vec = self;
             if !vec.is_empty() {
                 let idx = (token % vec.len() as u64) as usize;
@@ -702,8 +704,7 @@ impl Corruptible for bool {
         apply_soft_corruption(score);
 
         // Apply Hard Corruption
-        let corruption_factor = token.count_ones() as usize;
-        if score > 100 || corruption_factor > 16 {
+        if score > 100 || (token ^ CANONICAL_CLEAN_TOKEN) != 0 {
             !self // Flip the boolean value
         } else {
             self
@@ -719,8 +720,7 @@ impl Corruptible for u32 {
         apply_soft_corruption(score);
 
         // Apply Hard Corruption
-        let corruption_factor = token.count_ones() as usize;
-        if score > 100 || corruption_factor > 16 {
+        if score > 100 || (token ^ CANONICAL_CLEAN_TOKEN) != 0 {
             self.wrapping_add(token as u32) // Add some entropy from token
         } else {
             self
@@ -736,8 +736,7 @@ impl Corruptible for f64 {
         apply_soft_corruption(score);
 
         // Apply Hard Corruption
-        let corruption_factor = token.count_ones() as usize;
-        if score > 100 || corruption_factor > 16 {
+        if score > 100 || (token ^ CANONICAL_CLEAN_TOKEN) != 0 {
             self * (1.0 + (token as f64 * 0.0001)) // Small multiplication factor
         } else {
             self

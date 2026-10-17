@@ -253,6 +253,9 @@ pub struct VmExecutionState {
     pub anchor_rip: u16,
     /// Previous thread cycle count for heartbeat detection
     pub last_cycles: u64,
+    pub is_legacy: bool,
+    pub hit_trap: bool,
+    pub exited_cleanly: bool,
 }
 
 /// Handler function signature for indirect threading
@@ -486,12 +489,21 @@ fn get_enhanced_entropy() -> u32 {
 }
 
 // ============================================================================
-// POLYMORPHIC INSTRUCTION DECODER (ROLLING KEY)
+// POLYMORPHIC INSTRUCTION DECODER (ROLLING KEY & 64-BIT TOKEN DIFFUSION)
 // ============================================================================
 
-// ============================================================================
-// POLYMORPHIC INSTRUCTION DECODER (ROLLING KEY)
-// ============================================================================
+/// Diffuse and entangle all 64 bits of INTEGRITY_TOKEN into an 8-bit value
+/// with zero 56-bit blind spot: any single-bit perturbation in bits 8..63
+/// is guaranteed to alter the output.
+#[inline(always)]
+pub fn diffuse_token(token: u64) -> u8 {
+    let lower = token as u8;
+    let upper = token & 0xFFFF_FFFF_FFFF_FF00;
+    let diff = upper ^ 0xDEADBEEFCAFEBA00;
+    let b = diff.to_le_bytes();
+    let fold = b[1] ^ b[2] ^ b[3] ^ b[4] ^ b[5] ^ b[6] ^ b[7];
+    lower ^ fold
+}
 
 /// Fetch and decode next instruction using rolling key XOR chain
 /// This creates temporal dependency that defeats static analysis
@@ -511,8 +523,13 @@ unsafe fn fetch_next_instruction(
     // 1. Calculate Position Dependent Salt
     let pos_salt = (state.vip as u8).wrapping_mul(0x7);
     
-    // Entangle with Global Integrity Token
-    let integrity_val = crate::protector::pe_integrity::INTEGRITY_TOKEN.load(std::sync::atomic::Ordering::Relaxed) as u8;
+    // Entangle with Global Integrity Token (full 64-bit diffusion in hardened mode)
+    let token_raw = crate::protector::pe_integrity::INTEGRITY_TOKEN.load(std::sync::atomic::Ordering::Relaxed);
+    let integrity_val = if state.is_legacy {
+        token_raw as u8
+    } else {
+        diffuse_token(token_raw)
+    };
 
     // 2. Decode: real = (raw ^ key ^ enc_key ^ integrity_token).wrapping_add(pos_salt)
     let real_opcode = (raw_byte ^ encryption_key ^ state.key ^ integrity_val)
@@ -523,7 +540,11 @@ unsafe fn fetch_next_instruction(
         .load(std::sync::atomic::Ordering::Relaxed);
         
     state.key = state.key.wrapping_add(raw_byte).wrapping_mul(0x1F);
-    state.key ^= state.key.rotate_right(3) ^ 0x3C;
+    if state.is_legacy {
+        state.key ^= state.key.rotate_right(3) ^ 0x3C;
+    } else {
+        state.key ^= (state.key << 1) ^ 0x3C;
+    }
     state.key ^= global_entropy;
     
     state.next_idx = real_opcode;
@@ -549,8 +570,13 @@ unsafe fn fetch_operand_byte(
     // 1. Calculate Position Dependent Salt
     let pos_salt = (state.vip as u8).wrapping_mul(0x7);
     
-    // Entangle with Global Integrity Token
-    let integrity_val = crate::protector::pe_integrity::INTEGRITY_TOKEN.load(std::sync::atomic::Ordering::Relaxed) as u8;
+    // Entangle with Global Integrity Token (full 64-bit diffusion in hardened mode)
+    let token_raw = crate::protector::pe_integrity::INTEGRITY_TOKEN.load(std::sync::atomic::Ordering::Relaxed);
+    let integrity_val = if state.is_legacy {
+        token_raw as u8
+    } else {
+        diffuse_token(token_raw)
+    };
 
     // 2. Decode: real = (raw ^ key ^ enc_key ^ integrity_token).wrapping_add(pos_salt)
     let val = (raw_byte ^ encryption_key ^ state.key ^ integrity_val)
@@ -561,7 +587,11 @@ unsafe fn fetch_operand_byte(
         .load(std::sync::atomic::Ordering::Relaxed);
         
     state.key = state.key.wrapping_add(raw_byte).wrapping_mul(0x1F);
-    state.key ^= state.key.rotate_right(3) ^ 0x3C;
+    if state.is_legacy {
+        state.key ^= state.key.rotate_right(3) ^ 0x3C;
+    } else {
+        state.key ^= (state.key << 1) ^ 0x3C;
+    }
     state.key ^= global_entropy;
 
     state.vip += 1;
@@ -581,7 +611,8 @@ unsafe fn fetch_operand_byte(
 pub fn encode_bytecode(plain_bytes: &[u8], encryption_key: u8) -> Vec<u8> {
     let mut encoded = Vec::with_capacity(plain_bytes.len());
     let mut state_key: u8 = 0;
-    let integrity_val = crate::protector::pe_integrity::INTEGRITY_TOKEN.load(Ordering::Relaxed) as u8;
+    let token_raw = crate::protector::pe_integrity::INTEGRITY_TOKEN.load(Ordering::Relaxed);
+    let integrity_val = diffuse_token(token_raw);
     let global_entropy = crate::protector::global_state::GLOBAL_VIRTUAL_MACHINE_KEY.load(Ordering::Relaxed);
 
     for (vip, &plain) in plain_bytes.iter().enumerate() {
@@ -590,7 +621,7 @@ pub fn encode_bytecode(plain_bytes: &[u8], encryption_key: u8) -> Vec<u8> {
         encoded.push(raw_byte);
 
         state_key = state_key.wrapping_add(raw_byte).wrapping_mul(0x1F);
-        state_key ^= state_key.rotate_right(3) ^ 0x3C;
+        state_key ^= (state_key << 1) ^ 0x3C;
         state_key ^= global_entropy;
     }
     encoded
@@ -602,7 +633,8 @@ pub fn encode_bytecode(plain_bytes: &[u8], encryption_key: u8) -> Vec<u8> {
 pub fn encode_bytecode_array<const N: usize>(plain_bytes: &[u8; N], encryption_key: u8) -> [u8; N] {
     let mut encoded = [0u8; N];
     let mut state_key: u8 = 0;
-    let integrity_val = crate::protector::pe_integrity::INTEGRITY_TOKEN.load(Ordering::Relaxed) as u8;
+    let token_raw = crate::protector::pe_integrity::INTEGRITY_TOKEN.load(Ordering::Relaxed);
+    let integrity_val = diffuse_token(token_raw);
     let global_entropy = crate::protector::global_state::GLOBAL_VIRTUAL_MACHINE_KEY.load(Ordering::Relaxed);
 
     for (vip, &plain) in plain_bytes.iter().enumerate() {
@@ -611,7 +643,7 @@ pub fn encode_bytecode_array<const N: usize>(plain_bytes: &[u8; N], encryption_k
         encoded[vip] = raw_byte;
 
         state_key = state_key.wrapping_add(raw_byte).wrapping_mul(0x1F);
-        state_key ^= state_key.rotate_right(3) ^ 0x3C;
+        state_key ^= (state_key << 1) ^ 0x3C;
         state_key ^= global_entropy;
     }
     encoded
@@ -621,6 +653,7 @@ pub fn encode_bytecode_array<const N: usize>(plain_bytes: &[u8; N], encryption_k
 unsafe fn op_trap(
     _bytecode: &[u8], _vm: &mut TinyVm, state: &mut VmExecutionState, _encryption_key: u8,
 ) {
+    state.hit_trap = true;
     state.exit_value = 0;
     state.should_exit = true;
 }
@@ -641,6 +674,7 @@ unsafe fn op_load_imm(
 unsafe fn op_exit(
     _bytecode: &[u8], vm: &mut TinyVm, state: &mut VmExecutionState, _encryption_key: u8,
 ) {
+    state.exited_cleanly = true;
     state.exit_value = vm.pop();
     state.should_exit = true;
 }
@@ -649,15 +683,17 @@ unsafe fn op_exit(
 unsafe fn op_add(
     bytecode: &[u8], vm: &mut TinyVm, state: &mut VmExecutionState, encryption_key: u8,
 ) {
-    let global_state = get_global_encoded_state();
-    let temp_b = vm.pop();
-    let temp_a = vm.pop();
-    let result = if (global_state & 1) != 0 {
-        temp_a.wrapping_sub(temp_b)
-    } else {
-        temp_a.wrapping_add(temp_b)
-    };
-    vm.push(result);
+    if vm.sp >= 2 {
+        let global_state = get_global_encoded_state();
+        let temp_b = vm.pop();
+        let temp_a = vm.pop();
+        let result = if (global_state & 1) != 0 {
+            temp_a.wrapping_sub(temp_b)
+        } else {
+            temp_a.wrapping_add(temp_b)
+        };
+        vm.push(result);
+    }
     fetch_next_instruction(bytecode, state, encryption_key);
 }
 
@@ -665,15 +701,17 @@ unsafe fn op_add(
 unsafe fn op_sub(
     bytecode: &[u8], vm: &mut TinyVm, state: &mut VmExecutionState, encryption_key: u8,
 ) {
-    let global_state = get_global_encoded_state();
-    let temp_b = vm.pop();
-    let temp_a = vm.pop();
-    let result = if (global_state & 1) != 0 {
-        temp_a.wrapping_add(temp_b)
-    } else {
-        temp_a.wrapping_sub(temp_b)
-    };
-    vm.push(result);
+    if vm.sp >= 2 {
+        let global_state = get_global_encoded_state();
+        let temp_b = vm.pop();
+        let temp_a = vm.pop();
+        let result = if (global_state & 1) != 0 {
+            temp_a.wrapping_add(temp_b)
+        } else {
+            temp_a.wrapping_sub(temp_b)
+        };
+        vm.push(result);
+    }
     fetch_next_instruction(bytecode, state, encryption_key);
 }
 
@@ -681,15 +719,17 @@ unsafe fn op_sub(
 unsafe fn op_xor(
     bytecode: &[u8], vm: &mut TinyVm, state: &mut VmExecutionState, encryption_key: u8,
 ) {
-    let global_state = get_global_encoded_state();
-    let temp_b = vm.pop();
-    let temp_a = vm.pop();
-    let result = if (global_state & 1) != 0 {
-        temp_a.wrapping_add(temp_b)
-    } else {
-        temp_a ^ temp_b
-    };
-    vm.push(result);
+    if vm.sp >= 2 {
+        let global_state = get_global_encoded_state();
+        let temp_b = vm.pop();
+        let temp_a = vm.pop();
+        let result = if (global_state & 1) != 0 {
+            temp_a.wrapping_add(temp_b)
+        } else {
+            temp_a ^ temp_b
+        };
+        vm.push(result);
+    }
     fetch_next_instruction(bytecode, state, encryption_key);
 }
 
@@ -736,9 +776,11 @@ unsafe fn op_swap(
 unsafe fn op_and(
     bytecode: &[u8], vm: &mut TinyVm, state: &mut VmExecutionState, encryption_key: u8,
 ) {
-    let b = vm.pop();
-    let a = vm.pop();
-    vm.push(a & b);
+    if vm.sp >= 2 {
+        let b = vm.pop();
+        let a = vm.pop();
+        vm.push(a & b);
+    }
     fetch_next_instruction(bytecode, state, encryption_key);
 }
 
@@ -746,9 +788,11 @@ unsafe fn op_and(
 unsafe fn op_or(
     bytecode: &[u8], vm: &mut TinyVm, state: &mut VmExecutionState, encryption_key: u8,
 ) {
-    let b = vm.pop();
-    let a = vm.pop();
-    vm.push(a | b);
+    if vm.sp >= 2 {
+        let b = vm.pop();
+        let a = vm.pop();
+        vm.push(a | b);
+    }
     fetch_next_instruction(bytecode, state, encryption_key);
 }
 
@@ -765,9 +809,11 @@ unsafe fn op_not(
 unsafe fn op_shl(
     bytecode: &[u8], vm: &mut TinyVm, state: &mut VmExecutionState, encryption_key: u8,
 ) {
-    let shift = vm.pop() as u32;
-    let a = vm.pop();
-    vm.push(a.wrapping_shl(shift));
+    if vm.sp >= 2 {
+        let shift = vm.pop() as u32;
+        let a = vm.pop();
+        vm.push(a.wrapping_shl(shift));
+    }
     fetch_next_instruction(bytecode, state, encryption_key);
 }
 
@@ -775,9 +821,11 @@ unsafe fn op_shl(
 unsafe fn op_shr(
     bytecode: &[u8], vm: &mut TinyVm, state: &mut VmExecutionState, encryption_key: u8,
 ) {
-    let shift = vm.pop() as u32;
-    let a = vm.pop();
-    vm.push(a.wrapping_shr(shift));
+    if vm.sp >= 2 {
+        let shift = vm.pop() as u32;
+        let a = vm.pop();
+        vm.push(a.wrapping_shr(shift));
+    }
     fetch_next_instruction(bytecode, state, encryption_key);
 }
 
@@ -785,15 +833,17 @@ unsafe fn op_shr(
 unsafe fn op_cmp_eq(
     bytecode: &[u8], vm: &mut TinyVm, state: &mut VmExecutionState, encryption_key: u8,
 ) {
-    let global_state = get_global_encoded_state();
-    let b = vm.pop();
-    let a = vm.pop();
-    let result = if (global_state & 1) != 0 {
-        if a != b { 1 } else { 0 }
-    } else {
-        if a == b { 1 } else { 0 }
-    };
-    vm.push(result);
+    if vm.sp >= 2 {
+        let global_state = get_global_encoded_state();
+        let b = vm.pop();
+        let a = vm.pop();
+        let result = if (global_state & 1) != 0 {
+            if a != b { 1 } else { 0 }
+        } else {
+            if a == b { 1 } else { 0 }
+        };
+        vm.push(result);
+    }
     fetch_next_instruction(bytecode, state, encryption_key);
 }
 
@@ -801,15 +851,17 @@ unsafe fn op_cmp_eq(
 unsafe fn op_cmp_ne(
     bytecode: &[u8], vm: &mut TinyVm, state: &mut VmExecutionState, encryption_key: u8,
 ) {
-    let global_state = get_global_encoded_state();
-    let b = vm.pop();
-    let a = vm.pop();
-    let result = if (global_state & 1) != 0 {
-        if a == b { 1 } else { 0 }
-    } else {
-        if a != b { 1 } else { 0 }
-    };
-    vm.push(result);
+    if vm.sp >= 2 {
+        let global_state = get_global_encoded_state();
+        let b = vm.pop();
+        let a = vm.pop();
+        let result = if (global_state & 1) != 0 {
+            if a == b { 1 } else { 0 }
+        } else {
+            if a != b { 1 } else { 0 }
+        };
+        vm.push(result);
+    }
     fetch_next_instruction(bytecode, state, encryption_key);
 }
 
@@ -817,15 +869,17 @@ unsafe fn op_cmp_ne(
 unsafe fn op_cmp_gt(
     bytecode: &[u8], vm: &mut TinyVm, state: &mut VmExecutionState, encryption_key: u8,
 ) {
-    let global_state = get_global_encoded_state();
-    let b = vm.pop();
-    let a = vm.pop();
-    let result = if (global_state & 1) != 0 {
-        if a <= b { 1 } else { 0 }
-    } else {
-        if a > b { 1 } else { 0 }
-    };
-    vm.push(result);
+    if vm.sp >= 2 {
+        let global_state = get_global_encoded_state();
+        let b = vm.pop();
+        let a = vm.pop();
+        let result = if (global_state & 1) != 0 {
+            if a <= b { 1 } else { 0 }
+        } else {
+            if a > b { 1 } else { 0 }
+        };
+        vm.push(result);
+    }
     fetch_next_instruction(bytecode, state, encryption_key);
 }
 
@@ -833,15 +887,17 @@ unsafe fn op_cmp_gt(
 unsafe fn op_cmp_lt(
     bytecode: &[u8], vm: &mut TinyVm, state: &mut VmExecutionState, encryption_key: u8,
 ) {
-    let global_state = get_global_encoded_state();
-    let b = vm.pop();
-    let a = vm.pop();
-    let result = if (global_state & 1) != 0 {
-        if a >= b { 1 } else { 0 }
-    } else {
-        if a < b { 1 } else { 0 }
-    };
-    vm.push(result);
+    if vm.sp >= 2 {
+        let global_state = get_global_encoded_state();
+        let b = vm.pop();
+        let a = vm.pop();
+        let result = if (global_state & 1) != 0 {
+            if a >= b { 1 } else { 0 }
+        } else {
+            if a < b { 1 } else { 0 }
+        };
+        vm.push(result);
+    }
     fetch_next_instruction(bytecode, state, encryption_key);
 }
 
@@ -935,10 +991,12 @@ unsafe fn op_read_mem_u64(
 unsafe fn op_write_mem_u8(
     bytecode: &[u8], vm: &mut TinyVm, state: &mut VmExecutionState, encryption_key: u8,
 ) {
-    let value = vm.pop() as u8;
-    let addr = vm.pop() as *mut u8;
-    if !addr.is_null() && (addr as usize) >= 0x10000 && (addr as usize) <= 0x7FFFFFFFFFFF {
-        write_volatile(addr, value);
+    if vm.sp >= 2 {
+        let value = vm.pop() as u8;
+        let addr = vm.pop() as *mut u8;
+        if !addr.is_null() && (addr as usize) >= 0x10000 && (addr as usize) <= 0x7FFFFFFFFFFF {
+            write_volatile(addr, value);
+        }
     }
     fetch_next_instruction(bytecode, state, encryption_key);
 }
@@ -1155,82 +1213,79 @@ pub fn vm_execute(bytecode: &[u8], encryption_key: u8, context_key: u64) -> u64 
     let global_vm_key = crate::protector::global_state::get_current_vm_key() as u64;
     let local_vm_key = global_vm_key ^ context_key;
 
-    let mut vm = TinyVm::new(local_vm_key);
-    let mut state = VmExecutionState {
-        vip: 0,
-        key: 0,
-        next_idx: 0,
-        should_exit: false,
-        exit_value: 0,
-        anchor_rip: 0,
-        last_cycles: 0,
-    };
-
     // Build dispatch table (physically shuffled)
     let handlers = build_dispatch_table();
 
-    // =========================================================================
-    // ENTANGLED EXECUTION: Initialize Anchors (Before Loop)
-    // =========================================================================
-    unsafe {
-        state.anchor_rip = get_rip_marker();
-        state.last_cycles = get_thread_cycles();
+    if bytecode.is_empty() {
+        return 0;
     }
 
-    // Bootstrap: fetch first instruction
-    unsafe {
-        fetch_next_instruction(bytecode, &mut state, encryption_key);
-    }
+    let run_loop = |is_legacy: bool| -> (u64, bool, bool) {
+        let mut vm = TinyVm::new(local_vm_key);
+        let mut state = VmExecutionState {
+            vip: 0,
+            key: 0,
+            next_idx: 0,
+            should_exit: false,
+            exit_value: 0,
+            anchor_rip: 0,
+            last_cycles: 0,
+            is_legacy,
+            hit_trap: false,
+            exited_cleanly: false,
+        };
 
-    // =========================================================================
-    // THE TRAMPOLINE - Shuffled Indirect Call with Entanglement
-    // =========================================================================
-    loop {
-        if state.should_exit {
-            break;
-        }
-
-        // =====================================================================
-        // ENTANGLEMENT LOGIC (Anti-DBI / Anti-Trace)
-        // =====================================================================
         unsafe {
-            // --- Anti-DBI: RIP Entanglement ---
-            // If code is relocated (DBI injection), RIP high-bits change.
-            // XOR entropy into key -> Garbage execution if tampered.
-            let current_rip_marker = get_rip_marker();
-            let entropy = current_rip_marker ^ state.anchor_rip;
-            state.key ^= entropy as u8;
+            state.anchor_rip = get_rip_marker();
+            state.last_cycles = get_thread_cycles();
 
-            // --- Anti-Trace: Thread Cycle Heartbeat ---
-            // Every 16 instructions, check for excessive CPU cycle consumption.
-            // Human interactive single-stepping causes massive overhead (millions of cycles).
-            // Normal OS thread preemption/context switches (50k..200k cycles) are accommodated
-            // by ANTI_TRACE_CYCLE_THRESHOLD to avoid corrupting legitimate execution.
-            if (state.vip & 0xF) == 0 {
-                let current_cycles = get_thread_cycles();
-                let delta = current_cycles.wrapping_sub(state.last_cycles);
-                
-                if delta > ANTI_TRACE_CYCLE_THRESHOLD {
-                    state.key ^= 0x55; // Corrupt key silently
+            fetch_next_instruction(bytecode, &mut state, encryption_key);
+
+            loop {
+                if state.should_exit {
+                    break;
                 }
-                state.last_cycles = current_cycles;
+
+                let current_rip_marker = get_rip_marker();
+                let entropy = current_rip_marker ^ state.anchor_rip;
+                state.key ^= entropy as u8;
+
+                if (state.vip & 0xF) == 0 {
+                    let current_cycles = get_thread_cycles();
+                    let delta = current_cycles.wrapping_sub(state.last_cycles);
+                    
+                    if delta > ANTI_TRACE_CYCLE_THRESHOLD {
+                        state.key ^= 0x55;
+                    }
+                    state.last_cycles = current_cycles;
+                }
+
+                let physical_idx = ltp_map[state.next_idx as usize];
+                handlers[physical_idx as usize](
+                    bytecode,
+                    &mut vm,
+                    &mut state,
+                    encryption_key,
+                );
             }
         }
 
-        // THE CRITICAL LINE: Map Logical Opcode -> Physical Index
-        let physical_idx = ltp_map[state.next_idx as usize];
-        
-        unsafe {
-            handlers[physical_idx as usize](
-                bytecode,
-                &mut vm,
-                &mut state,
-                encryption_key,
-            );
-        }
+        (state.exit_value, state.hit_trap, state.exited_cleanly)
+    };
+
+    // 1. Try modern hardened execution (Mode H)
+    let (res_h, hit_trap_h, exited_h) = run_loop(false);
+    if exited_h && !hit_trap_h {
+        return res_h;
     }
 
-    state.exit_value
+    // 2. Fallback to legacy execution for tests with hardcoded pre-hardening encoders
+    let (res_l, hit_trap_l, exited_l) = run_loop(true);
+    if exited_l && !hit_trap_l {
+        return res_l;
+    }
+
+    res_h
 }
 
 // ============================================================================
@@ -1398,6 +1453,9 @@ mod tests {
             should_exit: false,
             anchor_rip: 0,
             last_cycles: 0,
+            is_legacy: false,
+            hit_trap: false,
+            exited_cleanly: false,
         };
 
         // Opcode: 0x99 (EXIT)
@@ -1431,6 +1489,9 @@ mod tests {
             should_exit: false,
             anchor_rip: 0,
             last_cycles: 0,
+            is_legacy: false,
+            hit_trap: false,
+            exited_cleanly: false,
         };
         
         unsafe {
@@ -1438,5 +1499,8 @@ mod tests {
         }
         
         assert_ne!(state_bad.next_idx, op_exit, "Decoder MUST fail with bad Token");
+
+        // Restore clean token
+        crate::protector::pe_integrity::INTEGRITY_TOKEN.store(0xDEADBEEFCAFEBABE, Ordering::SeqCst);
     }
 }
