@@ -2166,12 +2166,32 @@ pub unsafe fn handle_debug_exception(exception_info: *mut EXCEPTION_POINTERS) ->
         return true;
     }
 
-    // Detect Hardware Breakpoints (DR0 - DR3) -> EXCEPTION_SINGLE_STEP
+    // Detect Hardware Breakpoints (DR0 - DR3) and CPU Trap Flag (TF in EFlags) -> EXCEPTION_SINGLE_STEP
     if code == EXCEPTION_SINGLE_STEP {
+        let eflags = (*context).EFlags;
+        let is_tf = (eflags & 0x100) != 0;
+
+        // Check for Internal Authorized Protection Heartbeat
+        let vm_key = GLOBAL_VIRTUAL_MACHINE_KEY.load(Ordering::Relaxed) as u64;
+        let expected_heartbeat = vm_key.wrapping_mul(0x13371337);
+
+        let is_authorized_heartbeat = expected_heartbeat != 0
+            && (*context).Dr7 != 0
+            && (*context).Dr0 == expected_heartbeat
+            && (*context).Dr1 == 0
+            && (*context).Dr2 == 0
+            && (*context).Dr3 == 0
+            && !is_tf;
+
+        // Authorized heartbeat: let Phase 5 verify and pass through
+        if is_authorized_heartbeat {
+            return false;
+        }
+
         let dr_active = (*context).Dr0 != 0 || (*context).Dr1 != 0 ||
                         (*context).Dr2 != 0 || (*context).Dr3 != 0;
 
-        if dr_active {
+        if dr_active || is_tf {
             POISON_SEED.store(0xDEADC0DEBADC0DE, Ordering::SeqCst);
             add_suspicion(DetectionSeverity::Critical);
 
@@ -2181,6 +2201,11 @@ pub unsafe fn handle_debug_exception(exception_info: *mut EXCEPTION_POINTERS) ->
             (*context).Dr2 = 0;
             (*context).Dr3 = 0;
             (*context).Dr7 &= !0xFF;
+
+            // Clear CPU Trap Flag (TF) in EFlags to detach debugger single-stepping
+            // and prevent immediate re-fault upon redirected execution
+            (*context).EFlags &= !0x100;
+
             return true;
         }
     }

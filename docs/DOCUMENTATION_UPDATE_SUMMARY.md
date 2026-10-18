@@ -1,19 +1,19 @@
-# fuckDebug Documentation Synchronization & Audit Summary (Milestone 3) ✅
+# fuckDebug Documentation Synchronization & Audit Summary (Milestone 3 & M_DOCS) ✅
 
-> **Authoritative Synchronization Record for Milestone 3**  
-> *Resolution of all 14 Cataloged Discrepancies, Architectural Harmonization, and Formal Verification Documentation*
+> **Authoritative Synchronization Record for Milestone 3 & Milestone M_DOCS**  
+> *Resolution of all 22 Cataloged Discrepancies, Layer 3 Formal Verification Hardening, Architectural Harmonization, and Verification Census*
 
 ---
 
 ## Executive Summary
 
-Milestone 3 completed the comprehensive audit, harmonization, and synchronization of `README.md` and all guides in `docs/`. The documentation suite now reflects the exact reality of the `fuckDebug` codebase, its 5-layer architecture, 128-shard active/decoy state machine, dynamic seed reconstruction, 17 remediated security flaws, and the 125-test formal verification suite.
+Milestones 3 and M_DOCS completed the comprehensive audit, harmonization, and synchronization of `README.md` and all guides in `docs/`. The documentation suite now reflects the exact reality of the `fuckDebug` codebase, its 5-layer architecture, 128-shard active/decoy state machine, dynamic seed reconstruction, 17 remediated security flaws, formally verified Layer 3 invariants (F1 through F10), and the 348-test formal verification suite (21 root unit tests + 327 verification suite tests across 24 integration test binaries, 35 Verus SMT theorems, and 75 Bolero property harnesses).
 
 ---
 
-## 1. Resolution of the 14 Documentation Discrepancies
+## 1. Resolution of the 22 Documentation Discrepancies
 
-| # | Discrepancy (Cataloged in `survey_docs.md`) | Resolution Applied | Files Updated |
+| # | Discrepancy / Invariant Area | Resolution Applied | Files Updated |
 |---|---|---|---|
 | **1** | **Crate Naming Mismatch**: Crate cited as `fdebug` while Cargo package name is `fuckDebug` | Standardized on `fuckDebug` across all Cargo snippets and code examples; documented first-class Cargo package aliasing (`fdebug = { package = "fuckDebug", ... }`) | `README.md`, `docs/reference_guide_NEW.md`, `docs/implementation_guide_NEW.md`, `docs/BUILD_GUIDE.md`, `docs/FDEBUG_COMPLETE_GUIDE.md` |
 | **2** | **Broken Master Guide Links**: Links to non-existent `docs/FDEBUG_COMPLETE_GUIDE.md` in `README.md` and `BUILD_GUIDE.md` | Authored comprehensive 600+ line master guide `docs/FDEBUG_COMPLETE_GUIDE.md` integrating architecture, APIs, patterns, formal verification, and remediation ledger | Created `docs/FDEBUG_COMPLETE_GUIDE.md`; updated links in `README.md`, `docs/BUILD_GUIDE.md`, `docs/architecture_guide_NEW.md` |
@@ -29,6 +29,14 @@ Milestone 3 completed the comprehensive audit, harmonization, and synchronizatio
 | **12** | **Omission of Verification Suite**: Total lack of documentation for `verification_suite/`, Verus, and Bolero | Added dedicated Formal Verification sections documenting 125 tests, 30 Verus theorems, 47 Bolero harnesses, `run_verification.ps1`, and `run_verification.bat` | `README.md`, `docs/BUILD_GUIDE.md`, `docs/reference_guide_NEW.md`, `docs/FDEBUG_COMPLETE_GUIDE.md` |
 | **13** | **Anti-Dump Divergence**: Conflicting descriptions of total header erasure vs surgical corruption | Clarified that `anti_dump.rs` is authoritative: surgical erasure overwrites NT headers while preserving DOS header and section headers for OS stability | `docs/architecture_guide_NEW.md`, `docs/reference_guide_NEW.md`, `README.md`, `docs/FDEBUG_COMPLETE_GUIDE.md` |
 | **14** | **Documentation of Remediated Flaws**: No record of Milestone 1 and 2 flaw remediations | Cataloged all 17 remediated flaws (`FLAW-01` to `FLAW-17`) and formal defect proofs in `defect_proofs.rs` | `docs/FDEBUG_COMPLETE_GUIDE.md`, `README.md`, `docs/UPDATES.md` |
+| **15** | **Master VEH Stack Safety & TEB Bounds (F1, F3, F4)**: Unwind validation was unspecified; re-entrancy loops occurred | Documented TEB stack limits (`gs:[0x08]`/`gs:[0x10]`), `frames_walked >= 2` invariant, `VehReentrancyGuard` depth $\le 1$, and single-step TF precedence over Dr0 heartbeats | `README.md`, `docs/FDEBUG_COMPLETE_GUIDE.md`, `docs/architecture_guide_NEW.md`, `docs/reference_guide_NEW.md`, `docs/UPDATES.md` |
+| **16** | **Win32 CONTEXT ABI Layout (F2)**: CONTEXT buffer was truncated, risking buffer overruns under `RtlVirtualUnwind` | Documented full 1232-byte Win32 CONTEXT struct (`#[repr(C, align(16))]`) with 512-byte `XSAVE_FORMAT` for `Xmm0..Xmm15` and 416-byte `VectorRegister` | `README.md`, `docs/FDEBUG_COMPLETE_GUIDE.md`, `docs/architecture_guide_NEW.md`, `docs/reference_guide_NEW.md`, `docs/UPDATES.md` |
+| **17** | **Lock-Free Decoy Guard Pages (F7)**: Decoys previously used blocking `Mutex<Vec<(usize, usize)>>` risking VEH deadlocks | Documented fixed-size atomic table `[(AtomicUsize, AtomicUsize); 8]`, lock-free CAS registration, and wait-free $O(1)$ traversal | `README.md`, `docs/FDEBUG_COMPLETE_GUIDE.md`, `docs/architecture_guide_NEW.md`, `docs/reference_guide_NEW.md`, `docs/UPDATES.md` |
+| **18** | **Decoy Saturating Interval Math & Quarantine (F5, F6)**: Decoy check wrapped in high memory; concurrent readers bypassed traps | Documented `base.saturating_add(size)` interval math, `NumberParameters >= 2` check, and multi-thread quarantine to `PAGE_NOACCESS` | `README.md`, `docs/FDEBUG_COMPLETE_GUIDE.md`, `docs/architecture_guide_NEW.md`, `docs/reference_guide_NEW.md`, `docs/UPDATES.md` |
+| **19** | **KUSER Tick Rollover Synchronization (F8)**: 32-bit tick reads experienced 4.29B tick torn reads during rollover | Documented `read_kuser_time_lock_free` Seqlock check `high1 == high2` at `0x7FFE0014`, eliminating torn reads | `README.md`, `docs/FDEBUG_COMPLETE_GUIDE.md`, `docs/architecture_guide_NEW.md`, `docs/reference_guide_NEW.md`, `docs/UPDATES.md` |
+| **20** | **16-Byte Aligned Indirect Syscalls (F9)**: Stack was 56 bytes (`0x38`), causing misaligned RSP and SSE `#GP` faults | Documented 64-byte (`0x40`) stack reservation guaranteeing `(RSP - 0x40) % 16 == 0`, callee slot translation, and shadow scrubbing | `README.md`, `docs/FDEBUG_COMPLETE_GUIDE.md`, `docs/architecture_guide_NEW.md`, `docs/reference_guide_NEW.md`, `docs/UPDATES.md` |
+| **21** | **SSN Grammar Integrity & Hook Rejection (F10)**: Dynamic SSN parser lacked prefix validation and was vulnerable to hooks | Documented canonical prefix `[0x4C, 0x8B, 0xD1, 0xB8]`, bounded scan `min(32, len.saturating_sub(8))`, and range clamp `0 < ssn < 0x1000` | `README.md`, `docs/FDEBUG_COMPLETE_GUIDE.md`, `docs/architecture_guide_NEW.md`, `docs/reference_guide_NEW.md`, `docs/UPDATES.md` |
+| **22** | **Test Statistics Under-Reporting**: Docs reported 125 or 313 tests, omitting recent test expansions | Synchronized census to 348 automated tests workspace-wide (21 root crate + 327 verification suite across 24 binaries), 35 Verus SMT theorems, and 75 Bolero harnesses | All documentation files |
 
 ---
 
@@ -36,17 +44,17 @@ Milestone 3 completed the comprehensive audit, harmonization, and synchronizatio
 
 ```
 fuckDebug/
-├── README.md                          ✅ Synchronized root guide (crate name, 5 layers, formal suite, flaw ledger)
+├── README.md                          ✅ Synchronized root guide (crate name, 5 layers, formal suite, flaw ledger, line counts)
 ├── docs/
-│   ├── FDEBUG_COMPLETE_GUIDE.md       ✅ NEW: Comprehensive Master Integration & Verification Guide
-│   ├── architecture_guide_NEW.md      ✅ Harmonized 5-Layer Model, 128-Shard Active/Decoy, TinyVM 2.0
-│   ├── reference_guide_NEW.md         ✅ Accurate API Signatures, SecureBuffer Deref, Removed Phantoms
-│   ├── implementation_guide_NEW.md    ✅ Standardized Crate Imports, Replaced Hardcoded Seeds
-│   ├── BUILD_GUIDE.md                 ✅ Build Entropy Customization & Formal Suite Instructions
+│   ├── FDEBUG_COMPLETE_GUIDE.md       ✅ Comprehensive Master Integration & Verification Guide (Invariants F1..F10)
+│   ├── architecture_guide_NEW.md      ✅ Harmonized 5-Layer Model, 1232-Byte CONTEXT, 64-Byte Syscalls, Lock-Free Decoys
+│   ├── reference_guide_NEW.md         ✅ Accurate API Signatures, CONTEXT Layout, Verification Commands
+│   ├── implementation_guide_NEW.md    ✅ Standardized Crate Imports, Subprocess Isolation, Lock-Free Decoy Quarantine
+│   ├── BUILD_GUIDE.md                 ✅ Build Entropy Customization & Formal Suite Execution (348 Tests)
 │   ├── ARCHITECTURE_LAYER5.md         ✅ Seed Orchestrator Technical Specification
-│   ├── UPDATES.md                     ✅ Technical Changelog (128 Shards, Watchdog v2, Flaw Ledger)
+│   ├── UPDATES.md                     ✅ Technical Changelog (Milestones M1..M3, M4, M_DOCS)
 │   ├── README_UPDATES.md              ✅ Documentation Update Log & File Index
-│   └── DOCUMENTATION_UPDATE_SUMMARY.md✅ Milestone 3 Comprehensive Audit & Discrepancy Resolution Record
+│   └── DOCUMENTATION_UPDATE_SUMMARY.md✅ Milestone 3 & M_DOCS Comprehensive Audit & Discrepancy Resolution Record
 ```
 
 ---
@@ -59,4 +67,4 @@ fuckDebug/
 
 ---
 
-*fuckDebug Documentation Audit & Synchronization — Milestone 3 Complete — 2026*
+*fuckDebug Documentation Audit & Synchronization — Milestone M_DOCS Complete — 2026*

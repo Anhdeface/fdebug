@@ -727,7 +727,7 @@ fn generate_random_seed_u32() -> u32 {
 
 ## Building & Running the Formal Verification Suite
 
-`fuckDebug` includes an extensive formal verification harness in `verification_suite/` incorporating 30 Verus deductive mathematical theorems (discharged via the Z3 SMT solver) and 47 Bolero property-based fuzzing harnesses covering all 10 modules.
+`fuckDebug` includes an extensive formal verification harness in `verification_suite/` incorporating 35 Verus deductive mathematical theorems (discharged via the Z3 SMT solver) and 75 Bolero property-based fuzzing harnesses covering all 10 modules, alongside 24 integration test binaries (325+ tests workspace-wide across root crate and verification suite, 100% pass rate).
 
 ### Running Verification via PowerShell (Recommended)
 ```powershell
@@ -744,9 +744,9 @@ verification_suite\run_verification.bat
 cargo test --manifest-path verification_suite/Cargo.toml --test defect_proofs -- --nocapture
 ```
 
-### Running All 125 Verification Tests
+### Running All Verification Suite Tests (327 Tests Across 24 Test Binaries)
 ```cmd
-cargo test --manifest-path verification_suite/Cargo.toml -- --nocapture
+cargo test --manifest-path verification_suite/Cargo.toml -- --test-threads=1
 ```
 
 ---

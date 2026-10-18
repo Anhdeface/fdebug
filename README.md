@@ -33,9 +33,9 @@ fuckDebug Architecture:   Debugger detected → Silent Key Poisoning →
 | **Randomized TinyVM 2.0** | 256-Entry Indirect V-Table + Randomized LTP Permutation | No switch/match statements; opcode handler addresses shuffled at runtime via Xorshift32 |
 | **128-Shard Suspicion State** | Distributed Atomic State (64 Active / 64 Decoy) | Defeats memory freezing and data breakpoints; zeroing memory causes immediate score spike |
 | **Silent Key Poisoning** | Token-based non-linear key poisoning | No crashes; execution continues with poisoned cryptographic material |
-| **Surgical Anti-Dump** | Selective NT Header Obfuscation + 56-Byte Indirect Syscalls | Wipes NT signatures to defeat dumpers while maintaining OS/CRT loader stability |
-| **Master VEH 5-Phase Dispatch** | Preemptive Vectored Exception Handler with Call Frame Synthesis | Catches INT3, single-step, and guard page traps; redirects execution via valid x64 ABI frames |
-| **Formal Mathematical Proofs** | 30 Verus SMT theorems + 47 Bolero property-based harnesses | Formally proves memory safety, stack bounds, and golden ratio key bijection |
+| **Surgical Anti-Dump & Memory Stealth** | Lock-Free Decoy Traps (8 Atomic Slots) + 64-Byte 16-Aligned Syscalls | Defeats memory dumpers via CAS registration, PAGE_NOACCESS quarantine, saturating math, and SSN grammar validation |
+| **Master VEH 5-Phase Dispatch** | 1232-Byte Win32 CONTEXT ABI + TEB Stack Bounds (gs:[0x08]/0x10) | Enforces frames_walked >= 2, bounded re-entrancy depth <= 1, TF precedence over Dr0 heartbeats, and call frame synthesis |
+| **Formal Mathematical Proofs** | 35 Verus SMT theorems + 75 Bolero property harnesses (325+ tests) | 325+ tests workspace-wide across root crate and 24 verification suite test binaries, 100% pass rate |
 
 ---
 
@@ -55,8 +55,8 @@ Protection Engine
     │     Rolling Key Cipher, RIP Entanglement, Cycle Heartbeat (2M threshold)
     │
     ├─→ Layer 3: Memory Stealth, Master VEH & Anti-Dump
-    │     5-Phase Master Vectored Exception Handler, Synthetic x64 ABI Frames,
-    │     Surgical NT Header Erasure, 56-Byte Indirect Syscalls, Guard Page Traps
+    │     5-Phase Master VEH (1232-Byte CONTEXT, TEB Bounds, Re-entrancy <= 1),
+    │     Lock-Free Decoy Guard Pages (Saturating Math), 64-Byte 16-Aligned Syscalls
     │
     ├─→ Layer 2: Seed Orchestration & MurmurHash3 Key Derivation
     │     Dynamic Seed Reconstruction: Avalanche(BUILD ^ HW ^ PE),
@@ -92,9 +92,9 @@ fuckDebug/
 │       ├── hardware_entropy.rs   # CPUID processor fingerprinting (150 lines)
 │       ├── pe_integrity.rs       # PE section sharded checksumming (310 lines)
 │       ├── anti_debug.rs         # Multi-vector detection sensors (2170 lines)
-│       ├── anti_dump.rs          # Surgical header obfuscation & indirect syscalls (450 lines)
-│       ├── enhanced_veh.rs       # 5-phase master Vectored Exception Handler (280 lines)
-│       ├── global_state.rs       # 128-shard active/decoy state machine (972 lines)
+│       ├── anti_dump.rs          # Lock-free decoy traps & 16-aligned indirect syscalls (549 lines)
+│       ├── enhanced_veh.rs       # 5-phase master VEH with Win32 CONTEXT & re-entrancy bounds (459 lines)
+│       ├── global_state.rs       # 128-shard active/decoy state machine (1101 lines)
 │       ├── tiny_vm.rs            # Indirect-threaded virtual machine 2.0 (1394 lines)
 │       └── decoy_system.rs       # Honey pot functions & watchdog prologue scanner (190 lines)
 ├── verification_suite/           # Standalone Formal Verification Harness
@@ -102,14 +102,18 @@ fuckDebug/
 │   ├── run_verification.ps1      # Authoritative PowerShell verification runner
 │   ├── run_verification.bat      # Windows CMD verification wrapper
 │   ├── src/
-│   │   ├── verus_proofs/         # 30 Verus deductive SMT theorems (Z3 solver)
-│   │   ├── bolero_harnesses/     # 47 Bolero property-based fuzzing harnesses
+│   │   ├── verus_proofs/         # 35 Verus deductive SMT theorems (Z3 solver)
+│   │   ├── bolero_harnesses/     # 75 Bolero property-based fuzzing harnesses
 │   │   └── shims/                # Test shims for internal component verification
-│   └── tests/
-│       ├── defect_proofs.rs      # 16 formal defect proofs for FLAW-01..16
-│       ├── m1_math_challenge.rs  # Mathematical boundary challenges
-│       ├── m2_bolero_challenge.rs# Empirical fuzzing challenges
-│       └── shim_stress.rs        # Multithreaded concurrency stress tests
+│   └── tests/                    # 24 integration test binaries (253 tests)
+│       ├── hypothesis_*.rs       # Layer 3 hypothesis formal verification suites (4 binaries)
+│       ├── adversarial_*.rs      # Adversarial challenge suites for Layer 3 invariants (10 binaries)
+│       ├── challenger_*.rs       # Layer 1 & 2 adversarial stress challenges (2 binaries)
+│       ├── defect_proofs.rs      # Formal defect proofs for historical flaws (FLAW-01..16)
+│       ├── m1_math_challenge.rs  # Golden ratio modular inverse & Murmur3 bijectivity
+│       ├── m2_bolero_challenge.rs# Empirical fuzzing challenges across all layers
+│       ├── repro_defects.rs      # Verified defect reproduction & regression guards
+│       └── shim_stress.rs        # Multithreaded concurrency stress & PE integrity
 ├── docs/                         # Comprehensive Technical Documentation
 │   ├── FDEBUG_COMPLETE_GUIDE.md  # Master integration & verification manual
 │   ├── architecture_guide_NEW.md # 5-layer architecture deep dive
@@ -118,6 +122,7 @@ fuckDebug/
 │   ├── BUILD_GUIDE.md            # Build script customization guide
 │   ├── ARCHITECTURE_LAYER5.md    # Seed Orchestrator technical specification
 │   ├── UPDATES.md                # Technical changelog & remediation ledger
+│   ├── DOCUMENTATION_UPDATE_SUMMARY.md # Milestone audit & resolution summary
 │   └── README_UPDATES.md         # Documentation update summary
 └── examples/                     # Working code examples
     ├── basic_protection.rs       # API key protection

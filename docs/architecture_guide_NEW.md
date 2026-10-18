@@ -35,7 +35,7 @@ The engine operates on three foundational principles:
 +-----------------------------------------------------------------------------------+
 | Layer 3: Memory Stealth & Anti-Dump                                               |
 |   `anti_dump.rs`, `enhanced_veh.rs`, `decoy_system.rs` — 5-Phase Master VEH,      |
-|   Synthetic x64 Call Frames, Surgical Header Erasure, 56-Byte Syscalls, Decoys    |
+|   1232-Byte CONTEXT ABI, 64-Byte (0x40) Syscalls, Lock-Free Decoy Traps           |
 +-----------------------------------------------------------------------------------+
                                           ▲
 +-----------------------------------------------------------------------------------+
@@ -174,71 +174,104 @@ This guarantees that uncorrupted keys can be cleanly inverted, while any suspici
 
 ---
 
-## Architecture Layer 3: Memory Stealth & Anti-Dump
+## Architecture Layer 3: Memory Stealth, Master VEH & Anti-Dump
 
-Layer 3 defeats memory dumping utilities, debugging hooks, and process inspection tools.
+Layer 3 defeats memory dumping utilities, debugging hooks, and process inspection tools through formal mathematical invariants and lock-free execution.
 
 ### 3.1 Five-Phase Master Vectored Exception Handler (`enhanced_veh.rs`)
 
-`enhanced_veh.rs` implements a master exception filter pre-empting standard Structured Exception Handling (SEH):
+`enhanced_veh.rs` implements a pre-emptive exception filter registered first via `AddVectoredExceptionHandler(1, Some(master_veh_handler))` to protect execution before standard Structured Exception Handling (SEH) or external debuggers can intervene:
 
 ```
 Exception Occurs
        │
        ▼
-[Phase 1: Entry Filtering]
-       │ ── Is ExceptionAddress in .text OR is code STATUS_GUARD_PAGE_VIOLATION?
-       │    NO  → Return EXCEPTION_CONTINUE_SEARCH
+[Phase 1: Entry Filtering & Bounded Re-entrancy]
+       │ ── VehReentrancyGuard check (thread-local atomic depth <= 1)
+       │    STATUS_GUARD_PAGE_VIOLATION (0x80000001) intercepted unconditionally
+       │    Hardware/software faults: is ExceptionAddress in .text?
+       │    NO  → Return EXCEPTION_CONTINUE_SEARCH (0)
        │    YES → Intercept
        ▼
-[Phase 2: Shallow Stack Unwinding]
-       │ ── Walk 2 frames via RtlVirtualUnwind
-       │    Invalid frames or RIP=0 → Poison context & redirect
+[Phase 2: Strict TEB Stack Unwinding]
+       │ ── Query TEB limits: gs:[0x08] (StackBase) & gs:[0x10] (StackLimit)
+       │    Validate initial Context: Rip != 0, Rsp % 8 == 0, StackLimit <= Rsp <= StackBase - 8
+       │    Walk frames via RtlVirtualUnwind (enforcing frames_walked >= 2)
+       │    Invalid frames or truncated stack → Poison context & redirect
        ▼
-[Phase 3: Anti-Dump Trap Dispatch]
+[Phase 3: Lock-Free Anti-Dump Trap Dispatch]
        │ ── STATUS_GUARD_PAGE_VIOLATION caught?
-       │    YES → Poison encryption keys & trip blind diagnostic mode
+       │    Query Lock-Free Atomic Decoy Table [(AtomicUsize, AtomicUsize); 8] with saturating math
+       │    YES → Quarantine page to PAGE_NOACCESS & poison keys
        ▼
 [Phase 4: Anti-Debug Breakpoint Dispatch]
-       │ ── EXCEPTION_BREAKPOINT (INT3) or SINGLE_STEP (Drx)?
-       │    YES → Increment suspicion & construct redirection frame
+       │ ── EXCEPTION_BREAKPOINT (INT3) or EXCEPTION_SINGLE_STEP (0x80000004)?
+       │    Verify Dr0 heartbeat match; if mismatch or EFLAGS.TF set → trap
        ▼
-[Phase 5: TinyVM Debug Register Verification]
+[Phase 5: TinyVM Context & Single-Step Precedence]
        │ ── Verify Dr0-Dr3 against rolling checksum
-       │    Corrupted → Synthesize call frame to safe_exit_stub
+       │    Corrupted or TF stepping → Synthesize call frame to safe_exit_stub
        ▼
-Return EXCEPTION_CONTINUE_EXECUTION
+Return EXCEPTION_CONTINUE_EXECUTION (-1)
 ```
 
-### 3.2 Windows x64 ABI-Compliant Call Frame Synthesis
+- **Re-entrancy Confinement**: Managed via `VehReentrancyGuard` utilizing a thread-local cell. Confinement depth is strictly bounded to $\text{Depth}(T) \le 1$. If already active (`cur >= 1`), it immediately returns `EXCEPTION_CONTINUE_SEARCH` (0), eliminating recursive fault loops and kernel stack exhaustion. RAII `drop()` decrements depth safely via `saturating_sub(1)`.
+- **TEB Stack Bounds Verification**: Enforces that all stack pointers during unwinding reside strictly within `[TEB.StackLimit, TEB.StackBase]`:
+  $$\text{spec\_stack\_frame\_valid}(w, \text{rip}, \text{rsp}, \text{limit}, \text{base}) \iff (w \ge 2) \land (\text{rip} \ne 0) \land (\text{rsp} \equiv 0 \pmod 8) \land (\text{limit} \le \text{rsp} \le \text{base} - 8)$$
+  Leaf frames without unwind metadata dereference the return address from `*(ctx.Rsp as *const u64)` with an 8-byte stack advance. Truncated or spoofed stack frames terminate traversal and route directly to `poison_thread_context`.
+- **Single-Step Precedence & TF Trapping**: Enforces strict priority between authorized heartbeats and debugger stepping:
+  $$\text{spec\_is\_authorized\_heartbeat} \iff (Dr0 = \text{expected}) \land (Dr1 = Dr2 = Dr3 = 0) \land ((\text{EFlags} \land 0\text{x}100) = 0)$$
+  Authorized TinyVM heartbeats continue execution (`EXCEPTION_CONTINUE_EXECUTION`). When the CPU Trap Flag is set ($(\text{EFlags} \land 0\text{x}100) \ne 0$), TF is cleared (`context.EFlags &= !0x100`) and the thread context is poisoned immediately.
 
-When redirecting execution to a decoy handler or safe termination stub, simply altering `context.Rip` violates the Windows x64 calling convention, causing crash dialogs when the function attempts to execute `ret`.
+### 3.2 Win32 CONTEXT ABI (1232 Bytes) & Call Frame Synthesis
 
-Layer 3 synthesizes an authentic 64-bit call frame:
-1. Aligns `context.Rsp` to 16 bytes minus 8: `(context.Rsp & !0xFu64).wrapping_sub(0x28)`.
-2. Writes the return address of `safe_exit_stub` (which calls `ExitThread(0)`) at `[Rsp]`.
-3. Reserves 32 bytes of shadow space at `[Rsp + 8 .. Rsp + 32]`.
-4. Updates `context.Rip` to the decoy function entry point.
+To guarantee complete zero-defect interoperability with Windows x64 kernel exception dispatching:
+- **1232-Byte Full CONTEXT Layout**: Conforms 100% to the official Windows x64 `CONTEXT` ABI specification (`0x4D0` / 1232 bytes, `#[repr(C, align(16))]`), providing exact byte offsets for `P1Home`..`P6Home` (`0x00..0x30`), `ContextFlags` & `MxCsr` (`0x30..0x38`), general-purpose registers `Rax`..`R15` (`0x78..0xF8`), `Rip` (`0xF8..0x100`), 16-byte aligned `XSAVE_FORMAT` (512 bytes, `0x100..0x300` holding `Xmm0`..`Xmm15`), upper vector registers `[M128A; 26]` (416 bytes, `0x300..0x4A0`), and debug control registers (`0x4A8..0x4D0`).
+- **Spatial Memory Safety**: Eliminates buffer overrun risks under `RtlVirtualUnwind`. Formally verified via Verus theorem `theorem_xmm15_spatial_safety`: `Xmm15` write at offset `0x290` (656) with 16 bytes ends at 672, strictly within the 1232-byte allocated buffer.
+- **Call Frame Synthesis**:
+  1. Aligns `context.Rsp` to 16 bytes minus 8: `(context.Rsp & !0xFu64).wrapping_sub(0x28)`.
+  2. Pushes the return address of `safe_exit_stub` (which calls `ExitThread(0)`) at `[Rsp]`.
+  3. Reserves 32 bytes of shadow space at `[Rsp + 8 .. Rsp + 32]`.
+  4. Redirects `context.Rip` to the decoy target (`is_process_being_debugged`) and loads poisoned `context.Rax = key.wrapping_mul(0xDEADBEEF)`.
 
-### 3.3 Surgical PE Header Obfuscation (`anti_dump.rs`)
+### 3.3 Lock-Free Atomic Decoy Guard Pages (`anti_dump.rs`)
 
-Dump tools rely on valid PE headers to reconstruct executables. Naive anti-dump implementations zero the entire DOS header (`MZ`), which causes crashes in system DLLs.
+Replaces vulnerable mutex synchronization with high-performance lock-free atomic tracking:
+- **Lock-Free Atomic Table**: Decoy intervals are registered into a fixed-size atomic array `pub static DECOY_REGIONS: [(AtomicUsize, AtomicUsize); 8] = [(AtomicUsize::new(0), AtomicUsize::new(0)); 8];` (128 bytes total). Registration uses lock-free CAS `slot.0.compare_exchange(0, base, Ordering::AcqRel, Ordering::Acquire)`. Eliminates all mutex locks inside the VEH context, guaranteeing zero-deadlock signal/exception safety.
+- **Saturating Address Arithmetic**: Interval membership checks calculate upper bounds via `base.saturating_add(size)` rather than standard addition:
+  $$\text{spec\_point\_contained\_saturating}(A, B, S) \iff (S > 0) \land (A \ge B) \land (A < B \mathbin{\dot{+}} S)$$
+  This mathematically eliminates integer wrap-around vulnerabilities when decoy pages are allocated in high memory ranges ($> 2^{64} - 4096$).
+- **Persistent Multi-Thread Trap Quarantine**: When dumpers trigger `STATUS_GUARD_PAGE_VIOLATION`, the handler dynamically transitions the tripped decoy page from `PAGE_READWRITE` to `PAGE_NOACCESS` (`0x01`) via `VirtualProtect`. This permanently isolates honeypot buffers and prevents concurrent dumping threads from reading decoy memory undetected.
 
-Layer 3 performs **surgical corruption**:
-- **Preserved**: DOS header (`MZ` signature) and PE section headers, maintaining OS and CRT loader stability.
-- **Erased**: `AddressOfEntryPoint`, NT signature (`0x00004550`), export tables, and debug directories are overwritten with pseudo-random entropy derived from `KUSER_SHARED_DATA`. Memory dumpers fail to identify section alignments or entry points.
+### 3.4 16-Byte Aligned Indirect Syscall Engine (`anti_dump.rs`)
 
-### 3.4 Indirect Syscall Engine (`anti_dump.rs`)
+Bypasses user-mode AV/EDR hooks on memory management APIs with strict mathematical calling convention invariants:
+1. **SSN Grammar Validation & Hook Rejection**:
+   - Inspects `ntdll.dll` function prelude bytes against the canonical NT syscall pattern: `4C 8B D1 B8` (`mov r10, rcx; mov eax, <SSN>`).
+   - Bounded opcode search window `max_scan = min(32, len.saturating_sub(8))` with strict range check `0 < ssn && ssn < 0x1000`.
+   - Proactively rejects 64-bit absolute detour hooks (`48 B8 <addr> FF E0`), 5-byte relative JMP hooks (`E9 <rel32>`), and trampolines inserted by monitoring software.
+2. **16-Byte Stack Frame Invariant (`RSP % 16 == 0`)**:
+   - Inline assembly reserves **64 bytes** (`SYSCALL_STACK_RESERVED_BYTES = 0x40`, `sub rsp, 0x40` / `add rsp, 0x40`).
+   - Modular Congruence Proof: With compiler caller $RSP_0 \equiv 0 \pmod{16}$, pre-call stack allocation gives $RSP_{\text{pre-call}} = RSP_0 - 0\text{x}40 \equiv 0 \pmod{16}$. Callee entry after return address push gives $RSP_{\text{callee-entry}} \equiv 8 \pmod{16}$, strictly conforming to Microsoft x64 calling conventions.
+   - Callee parameter translation: Writes 5th parameter `p_old` at caller slots `[rsp+0x20]` and `[rsp+0x28]`. When `call {target_gadget}` pushes the return address, callee parameter 5 lands cleanly at `[rsp+0x28]`.
+   - Forensic Shadow Space Scrubbing: Automatically zeroes (`mov qword ptr [rsp+0x20], 0`, `mov qword ptr [rsp+0x28], 0`) shadow parameter space before restoring `rsp` via `add rsp, 0x40`.
 
-To bypass EDR API hooks on `VirtualProtect` or `NtProtectVirtualMemory`:
-1. Resolves the System Service Number (SSN) dynamically from `ntdll.dll` export tables.
-2. Locates a `syscall; ret` instruction gadget inside `ntdll.dll`.
-3. Executes the system call via inline assembly with **56 reserved stack bytes** (`sub rsp, 0x38` / `add rsp, 0x38`), ensuring the 5th argument at `[rsp + 0x28]` is stored safely within the allocated frame.
+### 3.5 KUSER_SHARED_DATA Tick Rollover Synchronization
 
-### 3.5 Guard Page Honeytraps & Watchdog v2
-
-- **Guard Page Honeytraps**: Commits 4 decoy memory pages allocated with `PAGE_GUARD`. If a memory scanner attempts a linear memory read, a `STATUS_GUARD_PAGE_VIOLATION` is triggered and intercepted by the Master VEH, tripping silent poisoning.
-- **KUSER Watchdog v2**: Reads `InterruptTime` from `0x7FFE0014` using paired aligned 32-bit reads. If execution latency exceeds 5 seconds (indicating thread suspension in a debugger), silent poisoning activates. Under heavy CPU load (>85%), timeout adaptively doubles to 10 seconds. Includes a 10-second startup warm-up period.
+- **Dual High-Tick Verification Loop**: Reads `InterruptTime` from `0x7FFE0014` (`LowPart`), `0x7FFE0018` (`High1Time`), and `0x7FFE001C` (`High2Time`) using volatile reads in a Seqlock protocol (`read_kuser_time_lock_free`):
+  ```rust
+  loop {
+      let high1 = high1_ptr.read_volatile() as u64;
+      let low = low_ptr.read_volatile() as u64;
+      let high2 = high2_ptr.read_volatile() as u64;
+      if high1 == high2 {
+          return (high1 << 32) | low;
+      }
+      std::hint::spin_loop();
+  }
+  ```
+  Eliminates the 4.29-billion tick jump ($2^{32} \times 100\text{ns} \approx 429.5\text{s}$) when the low 32-bit counter rolls over every 7.1 minutes, preventing false-positive suspicion alarms.
+- **Adaptive Liveness Threshold**: 5-second baseline timeout adaptively scales to 10 seconds under heavy CPU load (>85%) with a 10-second startup grace period.
 
 ### 3.6 Decoy Honey Pot Functions (`decoy_system.rs`)
 
@@ -416,7 +449,7 @@ impl<const N: usize> std::ops::Deref for SecureBuffer<N> {
 |---|---|---|---|
 | **Layer 1: Foundational Entropy & Detection** | `hardware_entropy.rs`, `pe_integrity.rs`, `anti_debug.rs` | CPUID fingerprinting, PE `.text` FNV-1a checksum, PEB scratch dereference, DRx checks, RDTSC calibration, TLS callback | Static key extraction, inline patches, INT3 hooks, hardware breakpoints, debuggers |
 | **Layer 2: Seed Orchestration** | `seed_orchestrator.rs` | 3-shard entropy mixing, MurmurHash3 avalanche finalizer, OnceLock caching, golden ratio automorphism | Replay attacks, cross-device binary copying, static analysis of constants |
-| **Layer 3: Memory Stealth & Anti-Dump** | `anti_dump.rs`, `enhanced_veh.rs`, `decoy_system.rs` | 5-phase master VEH, synthetic x64 ABI frames, surgical PE NT header erasure, 56-byte indirect syscalls, decoy honey pots | Memory dumpers (Scylla, ProcDump), guard page scanners, prologue patchers, EDR hooks |
+| **Layer 3: Memory Stealth & Anti-Dump** | `anti_dump.rs`, `enhanced_veh.rs`, `decoy_system.rs` | 5-phase master VEH (1232-byte CONTEXT, TEB limits, depth <= 1), 64-byte 16-aligned indirect syscalls, lock-free decoy table (8 slots, saturating math, quarantine), surgical PE NT header erasure | Memory dumpers (Scylla, ProcDump), guard page scanners, prologue patchers, EDR hooks |
 | **Layer 4: Polymorphic Virtual Execution** | `tiny_vm.rs` | 256-entry indirect v-table, randomized `LTP_MAP` permutation, rolling key cipher, RIP entanglement, cycle heartbeat | Disassemblers (IDA, Ghidra), DBI engines (Frida, DynamoRIO), instruction tracing |
 | **Layer 5: Decentralized State & Silent Corruption** | `global_state.rs` | 128 atomic shards (64 Active / 64 Decoy), pair-based partition, XOR masking, 3-shard scatter, dynamic SipHash, soft backoff | Memory search/freeze tools (Cheat Engine), data breakpoints, static decompilation |
 

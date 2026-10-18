@@ -35,6 +35,7 @@ extern "system" {
     fn GetCurrentProcess() -> isize;
 }
 
+const PAGE_NOACCESS: u32 = 0x01;
 const PAGE_READONLY: u32 = 0x02;
 const PAGE_READWRITE: u32 = 0x04;
 const PAGE_GUARD: u32 = 0x100;
@@ -109,6 +110,32 @@ struct IMAGE_NT_HEADERS64 {
 static SYSCALL_ID: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_J_ADDR: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(ptr::null_mut());
 
+/// SSN parser for x64 NTDLL export stubs (Feature F10: Grammar Integrity & Hook Rejection)
+///
+/// Invariants:
+/// - Scans for canonical prefix [0x4C, 0x8B, 0xD1, 0xB8] (`mov r10, rcx; mov eax, imm32`).
+/// - Enforces loop boundary bound: i <= stub.len().saturating_sub(8) (preventing buffer over-reads).
+/// - Validates SSN range: 0 < ssn < 0x1000 (rejecting EDR addresses and uninitialized values).
+/// - Returns Some(ssn) if clean; None if hooked, malformed, or out of range.
+pub fn parse_ssn_from_stub(stub: &[u8]) -> Option<u32> {
+    if stub.len() < 8 {
+        return None;
+    }
+    let max_scan = std::cmp::min(32, stub.len().saturating_sub(8));
+    for i in 0..=max_scan {
+        if stub[i] == 0x4C && stub[i + 1] == 0x8B && stub[i + 2] == 0xD1 && stub[i + 3] == 0xB8 {
+            let bytes = [stub[i + 4], stub[i + 5], stub[i + 6], stub[i + 7]];
+            let ssn = u32::from_le_bytes(bytes);
+            if ssn > 0 && ssn < 0x1000 {
+                return Some(ssn);
+            }
+        }
+    }
+    None
+}
+
+pub use parse_ssn_from_stub as extract_syscall_number_or_offset;
+
 /// Resolve NtProtectVirtualMemory SSN and Syscall instruction address
 unsafe fn resolve_indirect_syscalls() -> bool {
     // SAFETY: GetModuleHandleW(ntdll) is safe because we provide a valid null-terminated
@@ -119,17 +146,11 @@ unsafe fn resolve_indirect_syscalls() -> bool {
     let nt_protect_addr = GetProcAddress(ntdll, b"NtProtectVirtualMemory\0".as_ptr());
     if nt_protect_addr.is_null() { return false; }
     
-    let mut ssn = 0u32;
-    let mut found_ssn = false;
-    for i in 0..32 {
-        if *nt_protect_addr.add(i) == 0xB8 {
-            ssn = ptr::read_unaligned(nt_protect_addr.add(i+1) as *const u32);
-            found_ssn = true;
-            break;
-        }
-    }
-    
-    if !found_ssn { return false; }
+    let stub_slice = std::slice::from_raw_parts(nt_protect_addr as *const u8, 32);
+    let ssn = match parse_ssn_from_stub(stub_slice) {
+        Some(s) => s,
+        None => return false,
+    };
     
     // Search for 'syscall' instruction (0x0F 0x05) nearby to use for indirect jump
     let mut found_syscall = ptr::null_mut();
@@ -157,13 +178,11 @@ unsafe fn resolve_exit_syscall() -> bool {
     let addr = GetProcAddress(ntdll, b"NtTerminateProcess\0".as_ptr());
     if addr.is_null() { return false; }
     
-    // Check for SSN (mov eax, SSN)
-    for i in 0..32 {
-        if *addr.add(i) == 0xB8 {
-            let ssn = ptr::read_unaligned(addr.add(i+1) as *const u32);
-            EXIT_SYSCALL_ID.store(ssn as usize, Ordering::SeqCst);
-            return true;
-        }
+    // Feature F10: Parse SSN safely with hook rejection and bounds checking
+    let stub_slice = std::slice::from_raw_parts(addr as *const u8, 32);
+    if let Some(ssn) = parse_ssn_from_stub(stub_slice) {
+        EXIT_SYSCALL_ID.store(ssn as usize, Ordering::SeqCst);
+        return true;
     }
     
     // Hardcoded fallback for Win10/11 x64 (often 0x2C) if scan fails
@@ -172,8 +191,8 @@ unsafe fn resolve_exit_syscall() -> bool {
 }
 
 #[cfg(target_arch = "x86_64")]
-/// Reserved stack bytes for indirect syscall assembly frame (at least 0x30 to safely accommodate [rsp+0x28])
-pub const SYSCALL_STACK_RESERVED_BYTES: usize = 0x38;
+/// Reserved stack bytes for indirect syscall assembly frame (0x40 bytes / 64 bytes guarantees 16-byte alignment)
+pub const SYSCALL_STACK_RESERVED_BYTES: usize = 0x40;
 
 unsafe fn indirect_nt_protect_virtual_memory(
     process_handle: isize,
@@ -191,15 +210,18 @@ unsafe fn indirect_nt_protect_virtual_memory(
     // SAFETY: We are executing a raw syscall instruction. 
     // - The SSN (eax) and syscall address (SYSCALL_J_ADDR) are resolved dynamically from ntdll.
     // - Argument registers (r10, rdx, r8, r9) match the x64 Windows syscall convention.
-    // - Stack is aligned and shadow space plus 5th stack argument space (0x38 bytes) is allocated.
-    // - Writing to [rsp+0x28] of size 8 is strictly within the allocated 0x38 (56 bytes) bounds.
+    // - Stack is 16-byte aligned before call (0x40 bytes reserved guarantees (RSP - 0x40) % 16 == 0).
+    // - Writing to [rsp+0x20] and [rsp+0x28] accommodates caller-to-callee slot translation and trampoline jumps.
+    // - Argument and shadow slots are scrubbed to 0 prior to stack restoration to eradicate memory artifacts.
     unsafe {
         std::arch::asm!(
-            "sub rsp, 0x38",
+            "sub rsp, 0x40",
             "mov [rsp+0x20], {p_old}",
             "mov [rsp+0x28], {p_old}",
             "call {target_gadget}",
-            "add rsp, 0x38",
+            "mov qword ptr [rsp+0x20], 0",
+            "mov qword ptr [rsp+0x28], 0",
+            "add rsp, 0x40",
             in("r10") process_handle,
             in("rdx") base_address,
             in("r8") number_of_bytes_to_protect,
@@ -245,10 +267,44 @@ unsafe fn protected_virtual_protect(addr: *mut std::ffi::c_void, size: usize, pr
 // COMPONENT 2: DECOY TRAPS (Passive)
 // ============================================================================
 
-static DECOY_REGIONS: LazyLock<Mutex<Vec<(usize, usize)>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+// Feature F7: Re-export lock-free decoy tracking table from global_state
+pub use crate::protector::global_state::{DECOY_REGIONS, MAX_DECOY_REGIONS};
+
+/// Atomically registers a decoy memory region in the fixed-size atomic table (Feature F7).
+/// Returns true if successfully registered, or false if table is full (capacity 8).
+pub fn register_decoy_region(base: usize, size: usize) -> bool {
+    if base == 0 || size == 0 {
+        return false;
+    }
+
+    // Check if region base is already registered
+    for slot in DECOY_REGIONS.iter() {
+        if slot.0.load(Ordering::Acquire) == base {
+            slot.1.store(size, Ordering::Release);
+            return true;
+        }
+    }
+
+    // Find an empty slot using CAS
+    for slot in DECOY_REGIONS.iter() {
+        if slot.0.compare_exchange(0, base, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            slot.1.store(size, Ordering::Release);
+            return true;
+        }
+    }
+
+    false // Table full (MAX_DECOY_REGIONS reached)
+}
+
+/// Clears all registered decoy regions (primarily for test isolation) (Feature F7).
+pub fn clear_decoy_regions() {
+    for slot in DECOY_REGIONS.iter() {
+        slot.1.store(0, Ordering::Release);
+        slot.0.store(0, Ordering::Release);
+    }
+}
 
 unsafe fn spawn_decoy_traps() {
-    let mut regions = DECOY_REGIONS.lock().unwrap();
     let decoy_templates: [&[u8]; 3] = [
         b"XOR_KEY_BUFFER_STATIC_0xAF43\0",
         b"API_HASH_CACHE_V2_PROD\0",
@@ -271,7 +327,7 @@ unsafe fn spawn_decoy_traps() {
             // SAFETY: VirtualProtect is used to set PAGE_GUARD. This triggers the trap mechanism.
             // ptr is valid.
             VirtualProtect(ptr, 0x1000, PAGE_READWRITE | PAGE_GUARD, &mut old);
-            regions.push((ptr as usize, 0x1000));
+            register_decoy_region(ptr as usize, 0x1000);
         }
     }
 }
@@ -359,15 +415,27 @@ pub unsafe fn handle_guard_page_violation(ptrs: *mut EXCEPTION_POINTERS) -> bool
         return false;
     }
     let record = (*ptrs).ExceptionRecord;
-    if !record.is_null() && (*record).ExceptionCode == STATUS_GUARD_PAGE_VIOLATION {
+    if !record.is_null() 
+        && (*record).ExceptionCode == STATUS_GUARD_PAGE_VIOLATION 
+        && (*record).NumberParameters >= 2 
+    {
         // In STATUS_GUARD_PAGE_VIOLATION, ExceptionInformation[1] is the accessed virtual address
         let fault_addr = (*record).ExceptionInformation[1] as usize;
-        let decoys = DECOY_REGIONS.lock().unwrap();
         
-        for &(base, size) in decoys.iter() {
-            if fault_addr >= base && fault_addr < base + size {
-                // HONEYPOT HIT: Dumper or Scanner detected.
-                return true;
+        // F7: Lock-free, zero-allocation iteration over atomic decoy table
+        for slot in DECOY_REGIONS.iter() {
+            let base = slot.0.load(Ordering::Acquire);
+            let size = slot.1.load(Ordering::Acquire);
+            if base != 0 && size > 0 {
+                // F5: Saturating interval point-containment
+                if fault_addr >= base && fault_addr < base.saturating_add(size) {
+                    // HONEYPOT HIT: Dumper or Scanner detected.
+                    // F6: Transition triggered decoy page to PAGE_NOACCESS (quarantine)
+                    // to prevent concurrent dumping threads from reading decoy memory undetected.
+                    let mut old = 0u32;
+                    let _ = VirtualProtect(base as *mut _, size, PAGE_NOACCESS, &mut old);
+                    return true;
+                }
             }
         }
     }
@@ -385,6 +453,35 @@ fn get_kuser_shared_entropy() -> u64 {
     }
 }
 
+/// Canonical Lock-Free KUSER_SHARED_DATA Time Reader (Feature F8)
+///
+/// In Windows NT, KSYSTEM_TIME structures in KUSER_SHARED_DATA (0x7FFE0000)
+/// are updated non-atomically by the timer interrupt:
+///   1. High2Time = NewHigh
+///   2. LowPart   = NewLow
+///   3. High1Time = NewHigh
+///
+/// Reading LowPart and High1Time without verifying High1Time == High2Time creates torn reads
+/// during 32-bit rollovers, causing spurious jumps of ~429.5 seconds and triggering silent poisoning.
+/// This lock-free loop ensures that the High1 and High2 words match, proving the 64-bit value is untorn.
+#[inline(always)]
+pub unsafe fn read_kuser_time_lock_free(base_addr: usize) -> u64 {
+    let low_ptr = base_addr as *const u32;
+    let high1_ptr = (base_addr + 4) as *const u32;
+    let high2_ptr = (base_addr + 8) as *const u32;
+
+    loop {
+        let high1 = high1_ptr.read_volatile() as u64;
+        let low = low_ptr.read_volatile() as u64;
+        let high2 = high2_ptr.read_volatile() as u64;
+
+        if high1 == high2 {
+            return (high1 << 32) | low;
+        }
+        std::hint::spin_loop();
+    }
+}
+
 /// DIRECT SYSCALL WATCHDOG
 /// Checks if the VM loop has updated its heartbeat recently.
 /// If not (thread suspended by debugger), it silently poisons execution.
@@ -399,11 +496,9 @@ pub unsafe fn check_system_liveness_via_kuser() {
     // If heartbeat is 0, system might be just starting, skip check
     if last_heartbeat == 0 { return; }
     
-    // Read current time (100ns units) from KUSER_SHARED_DATA
-    // 0x7FFE0014 is 4-byte aligned, read two 32-bit words to avoid alignment violation
-    let low = (0x7FFE0014 as *const u32).read_volatile() as u64;
-    let high = (0x7FFE0018 as *const u32).read_volatile() as u64;
-    let current_time = (high << 32) | low;
+    // Read current time (100ns units) from KUSER_SHARED_DATA using lock-free rollover verification (Feature F8)
+    // 0x7FFE0014 is LowPart, 0x7FFE0018 is High1Time, 0x7FFE001C is High2Time
+    let current_time = read_kuser_time_lock_free(0x7FFE0014);
     
     // 2. Adaptive Thresholding
     // Default threshold: 5 seconds (50,000,000 units)

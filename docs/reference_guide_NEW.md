@@ -86,9 +86,9 @@ The **only recommended method** to construct a `Protector` instance.
 - **Arguments**: A `u32` seed (typically from `get_dynamic_seed()`).
 - **Initialization Sequence**:
   1. Computes baseline `.text` section checksum and initializes the PE shard table (`pe_integrity::heartbeat_check(0)`).
-  2. Registers the 5-phase Master VEH (`enhanced_veh::init_master_veh()`).
+  2. Registers the 5-phase Master VEH (`enhanced_veh::init_master_veh()`) with strict TEB stack limits (`gs:[0x08]`/`gs:[0x10]`), `frames_walked >= 2` unwinding, and bounded re-entrancy depth guard ($\text{depth} \le 1$).
   3. Scans decoy function prologues and records trusted baseline checksums (`decoy_system::init_decoy_system()`).
-  4. Deploys 4 `PAGE_GUARD` honeytraps and applies surgical PE NT header obfuscation (`anti_dump::init_anti_dump()`).
+  4. Deploys lock-free atomic decoy tracking table (`anti_dump::register_decoy_region`), sets up 64-byte 16-aligned indirect syscall resolution (`SYSCALL_STACK_RESERVED_BYTES = 0x40`), and applies surgical PE NT header obfuscation (`anti_dump::init_anti_dump()`).
   5. Returns an initialized `Protector` instance.
 
 ---
@@ -331,17 +331,95 @@ impl DetectionSeverity {
 
 ## 5. Anti-Dump & Memory Stealth APIs
 
+### Core Initialization & SSN Parsing (`anti_dump.rs`)
+
 ```rust
 /// Initializes anti-dump defenses:
 /// - Executes pe_integrity::init_shard_table()
 /// - Applies surgical PE NT header erasure (AddressOfEntryPoint, NT signature)
 /// - Preserves DOS header and section headers for OS stability
-/// - Deploys 4 PAGE_GUARD decoy honeytrap regions
+/// - Deploys lock-free atomic decoy tracking table with saturating interval math
+/// - Deploys PAGE_GUARD / PAGE_NOACCESS multi-thread quarantine honeytraps
 pub fn init_anti_dump() -> bool;
+
+/// Parses and validates NT system service number (SSN) from NTDLL stub bytes.
+/// Validates canonical prefix [0x4C, 0x8B, 0xD1, 0xB8], enforces bounded scan
+/// min(32, stub.len().saturating_sub(8)), and range-checks 0 < SSN < 0x1000.
+pub fn parse_ssn_from_stub(stub: &[u8]) -> Option<u32>;
 ```
 
-> **Note on PE Metadata Caching**:  
-> The legacy function `pe_integrity::force_cache_pe_metadata()` was removed. Shard table caching and section verification is handled automatically by `init_anti_dump()` and `pe_integrity::heartbeat_check(0)`.
+### Lock-Free Decoy Table & KUSER Watchdog (`anti_dump.rs`)
+
+```rust
+pub const MAX_DECOY_REGIONS: usize = 8;
+pub const SYSCALL_STACK_RESERVED_BYTES: usize = 0x40; // 64 bytes
+
+/// Registers a decoy memory region into the lock-free atomic table.
+/// Uses atomic compare-and-swap (CAS) with Acquire/Release ordering.
+pub fn register_decoy_region(base: usize, size: usize) -> bool;
+
+/// Clears all registered decoy regions in the atomic table.
+pub fn clear_decoy_regions();
+
+/// Lock-free Seqlock reader for KUSER_SHARED_DATA InterruptTime at 0x7FFE0014.
+/// Loops until High1Time == High2Time to eliminate 4.29-billion tick torn reads.
+pub unsafe fn read_kuser_time_lock_free(base_addr: usize) -> u64;
+```
+
+### Master VEH Invariants & ABI Structures (`enhanced_veh.rs`, `global_state.rs`)
+
+```rust
+/// Validates stack frames starting from initial CONTEXT, querying TEB stack limits
+/// gs:[0x08] (StackBase) and gs:[0x10] (StackLimit) via inline assembly.
+pub unsafe fn validate_stack_frames(initial_context: &CONTEXT, image_base: u64) -> bool;
+
+/// Validates stack frames within explicit stack boundary bounds.
+/// Enforces frames_walked >= 2, Rip != 0, Rsp % 8 == 0, and TEB stack containment.
+pub unsafe fn validate_stack_frames_with_bounds(
+    initial_context: &CONTEXT,
+    image_base: u64,
+    stack_limit: u64,
+    stack_base: u64,
+) -> bool;
+
+/// Thread-local RAII guard bounding VEH exception recursion depth to <= 1.
+pub struct VehReentrancyGuard { /* private fields */ }
+
+impl VehReentrancyGuard {
+    pub fn enter() -> Result<Self, usize>;
+}
+
+/// Official Win32 x64 CONTEXT structure (1232 bytes, 16-byte alignment).
+#[repr(C, align(16))]
+pub struct CONTEXT {
+    pub P1Home: u64,
+    pub P2Home: u64,
+    pub P3Home: u64,
+    pub P4Home: u64,
+    pub P5Home: u64,
+    pub P6Home: u64,
+    pub ContextFlags: u32,
+    pub MxCsr: u32,
+    pub SegCs: u16, pub SegDs: u16, pub SegEs: u16, pub SegFs: u16, pub SegGs: u16, pub SegSs: u16,
+    pub EFlags: u32,
+    pub Dr0: u64, pub Dr1: u64, pub Dr2: u64, pub Dr3: u64, pub Dr6: u64, pub Dr7: u64,
+    pub Rax: u64, pub Rcx: u64, pub Rdx: u64, pub Rbx: u64, pub Rsp: u64, pub Rbp: u64,
+    pub Rsi: u64, pub Rdi: u64, pub R8: u64,  pub R9: u64,  pub R10: u64, pub R11: u64,
+    pub R12: u64, pub R13: u64, pub R14: u64, pub R15: u64,
+    pub Rip: u64,
+    pub FltSave: XSAVE_FORMAT,          // 512 bytes (includes Xmm0..Xmm15)
+    pub VectorRegister: [M128A; 26],    // 416 bytes
+    pub VectorControl: u64,
+    pub DebugControl: u64,
+    pub LastBranchToRip: u64,
+    pub LastBranchFromRip: u64,
+    pub LastExceptionToRip: u64,
+    pub LastExceptionFromRip: u64,
+}
+```
+
+> **Note on PE Metadata Caching & Lock-Free State**:  
+> The legacy function `pe_integrity::force_cache_pe_metadata()` was removed. Shard table caching and section verification is handled automatically by `init_anti_dump()` and `pe_integrity::heartbeat_check(0)`. Decoy intervals are stored in a lock-free atomic table without Mutex overhead.
 
 ---
 
@@ -414,7 +492,7 @@ fn process_order(base_amount: f64) -> OrderData {
 
 ## 8. Formal Verification Suite Commands
 
-`fuckDebug` is validated by an extensive formal verification suite combining 30 Verus deductive SMT theorems and 47 Bolero property-based fuzzing harnesses.
+`fuckDebug` is validated by an extensive formal verification suite combining 35 Verus deductive SMT theorems, 75 Bolero property-based fuzzing harnesses, and 24 verification suite test binaries (348 total automated tests workspace-wide across root crate and verification suite, 100% pass rate).
 
 ### 8.1 Automated Verification Runners
 
@@ -435,12 +513,12 @@ verification_suite\run_verification.bat
 cargo test --manifest-path verification_suite/Cargo.toml --test defect_proofs -- --nocapture
 ```
 
-#### Run All 125 Automated Verification Tests:
+#### Run All Verification Suite Tests (327 Tests Across 24 Test Binaries):
 ```cmd
-cargo test --manifest-path verification_suite/Cargo.toml -- --nocapture
+cargo test --manifest-path verification_suite/Cargo.toml -- --test-threads=1
 ```
 
-#### Run Crate Unit Tests:
+#### Run Root Crate Unit Tests (21 Tests):
 ```cmd
 cargo test --lib
 ```

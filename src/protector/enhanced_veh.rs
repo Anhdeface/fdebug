@@ -13,6 +13,7 @@
 use core::ffi::c_void;
 use core::ptr;
 use std::arch::asm;
+use std::cell::Cell;
 use std::sync::atomic::Ordering;
 
 use crate::protector::global_state::{
@@ -100,6 +101,18 @@ unsafe extern "system" fn master_veh_handler(exception_info: *mut EXCEPTION_POIN
     if exception_info.is_null() {
         return EXCEPTION_CONTINUE_SEARCH;
     }
+
+    // ========================================================================
+    // RE-ENTRANCY DEPTH GUARD (Feature F3)
+    // ========================================================================
+    let _depth_guard = match VehReentrancyGuard::enter() {
+        Ok(guard) => guard,
+        Err(_) => {
+            // Nested exception triggered within VEH handler!
+            // Immediately return EXCEPTION_CONTINUE_SEARCH to prevent infinite recursion
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+    };
 
     let record = &mut *(*exception_info).ExceptionRecord;
     let context = &mut *(*exception_info).ContextRecord;
@@ -190,12 +203,16 @@ unsafe extern "system" fn master_veh_handler(exception_info: *mut EXCEPTION_POIN
         // If an attacker steps through, we verify memory integrity using their current location as entropy
         crate::protector::pe_integrity::heartbeat_check(context.Rip as u32);
 
-        // Verify if this single step is authorized (matches our Heartbeat) via TinyVM
-        // If anti_debug didn't catch it (e.g. some other mechanism), verify strictly.
-        if !verify_drx_integrity(context) {
-             // External debugger Step or HW Breakpoint detected
-             return poison_thread_context(context);
+        let is_tf = (context.EFlags & 0x100) != 0;
+
+        // If CPU Trap Flag is set, or if DRx verification fails, poison context
+        if is_tf || !verify_drx_integrity(context) {
+            context.EFlags &= !0x100; // Clear TF
+            return poison_thread_context(context);
         }
+
+        // Authorized heartbeat verified cleanly: continue execution
+        return EXCEPTION_CONTINUE_EXECUTION;
     }
 
     // Pass through legitimate system exceptions (Access Violation, etc.) 
@@ -239,37 +256,121 @@ pub unsafe fn poison_thread_context(context: &mut CONTEXT) -> i32 {
     EXCEPTION_CONTINUE_EXECUTION
 }
 
-/// Perform shallow stack walk using RtlVirtualUnwind
-unsafe fn validate_stack_frames(initial_context: &CONTEXT, image_base: u64) -> bool {
-    // Create a copy of context for unwinding so we don't modify the real one
+thread_local! {
+    static VEH_REENTRANCY_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+/// RAII guard to decrement VEH re-entrancy depth on scope exit
+pub struct VehReentrancyGuard;
+
+impl Drop for VehReentrancyGuard {
+    #[inline(always)]
+    fn drop(&mut self) {
+        VEH_REENTRANCY_DEPTH.with(|d| {
+            let cur = d.get();
+            d.set(cur.saturating_sub(1));
+        });
+    }
+}
+
+impl VehReentrancyGuard {
+    #[inline(always)]
+    pub fn enter() -> Result<Self, usize> {
+        VEH_REENTRANCY_DEPTH.with(|d| {
+            let cur = d.get();
+            if cur >= 1 {
+                Err(cur)
+            } else {
+                d.set(cur + 1);
+                Ok(VehReentrancyGuard)
+            }
+        })
+    }
+
+    #[inline(always)]
+    pub fn current_depth() -> usize {
+        VEH_REENTRANCY_DEPTH.with(|d| d.get())
+    }
+}
+
+#[inline(always)]
+pub fn get_veh_reentrancy_depth() -> usize {
+    VehReentrancyGuard::current_depth()
+}
+
+#[inline(always)]
+pub fn is_veh_reentrant() -> bool {
+    VehReentrancyGuard::current_depth() > 0
+}
+
+/// Query current thread stack bounds from Windows x64 TEB
+/// gs:[0x08] = StackBase (high memory bound)
+/// gs:[0x10] = StackLimit (low memory bound)
+#[inline(always)]
+pub unsafe fn get_teb_stack_limits() -> (u64, u64) {
+    let mut stack_base: u64;
+    let mut stack_limit: u64;
+    asm!(
+        "mov {}, gs:[0x08]",
+        "mov {}, gs:[0x10]",
+        out(reg) stack_base,
+        out(reg) stack_limit,
+        options(nostack, readonly, preserves_flags)
+    );
+    (stack_limit, stack_base)
+}
+
+/// Strict stack frame validation with explicit boundary parameters (supports testing & shims)
+pub unsafe fn validate_stack_frames_with_bounds(
+    initial_context: &CONTEXT,
+    image_base: u64,
+    stack_limit: u64,
+    stack_base: u64,
+) -> bool {
+    // 1. Initial frame validation
+    if initial_context.Rip == 0 || initial_context.Rsp == 0 || (initial_context.Rsp % 8 != 0) {
+        return false;
+    }
+
+    // Enforce stack boundaries if valid bounds are provided
+    if stack_base > stack_limit {
+        if initial_context.Rsp < stack_limit || initial_context.Rsp.saturating_add(8) > stack_base {
+            return false;
+        }
+    }
+
     let mut ctx = ptr::read(initial_context);
     let mut frames_walked = 0;
-    
-    // We want to verify at least 2 frames (Caller -> Callee)
+
+    // Walk at least 2 frames (Caller -> Callee)
     while frames_walked < 2 {
+        if ctx.Rip == 0 || ctx.Rsp == 0 || (ctx.Rsp % 8 != 0) {
+            return false;
+        }
+
+        if stack_base > stack_limit {
+            if ctx.Rsp < stack_limit || ctx.Rsp.saturating_add(8) > stack_base {
+                return false;
+            }
+        }
+
         let mut image_base_out = 0u64;
-        
-        // Lookup function entry
-        let entry = RtlLookupFunctionEntry(
-            ctx.Rip,
-            &mut image_base_out, 
-            ptr::null_mut()
-        );
+        let entry = RtlLookupFunctionEntry(ctx.Rip, &mut image_base_out, ptr::null_mut());
 
         if entry.is_null() {
-            // Leaf function or error.
-            // If we are in .text (verified in Phase 1), this might be a leaf.
+            // Leaf function unwinding: ret_addr is stored at [Rsp]
+            // Safe leaf frame dereference: RSP is 8-byte aligned and within stack bounds
             let ret_addr = *(ctx.Rsp as *const u64);
             if ret_addr == 0 {
-                break;
+                return false;
             }
             ctx.Rip = ret_addr;
-            ctx.Rsp += 8;
+            ctx.Rsp = ctx.Rsp.saturating_add(8);
         } else {
-            // Non-leaf function, perform virtual unwind
+            // Non-leaf function: RtlVirtualUnwind
             let mut handler_data: *mut c_void = ptr::null_mut();
             let mut establisher_frame: u64 = 0;
-            
+
             RtlVirtualUnwind(
                 0, // UNW_FLAG_NHANDLER
                 image_base_out,
@@ -278,21 +379,26 @@ unsafe fn validate_stack_frames(initial_context: &CONTEXT, image_base: u64) -> b
                 &mut ctx,
                 &mut handler_data,
                 &mut establisher_frame,
-                ptr::null_mut()
+                ptr::null_mut(),
             );
         }
 
         if ctx.Rip == 0 {
-            break;
+            return false;
         }
-        
-        // Optional: We could check if the unwound RIP is also in .text logic
-        // But for now, just succeeding unwinding is enough validation of stack alignment/pointers.
+
         frames_walked += 1;
     }
-    
-    // If we managed to walk, assume stack is at least structurally sane
-    true
+
+    // Mathematical Invariant: frames_walked MUST be at least 2
+    frames_walked >= 2
+}
+
+/// Production entry point querying live TEB stack bounds
+#[inline(always)]
+pub unsafe fn validate_stack_frames(initial_context: &CONTEXT, image_base: u64) -> bool {
+    let (stack_limit, stack_base) = get_teb_stack_limits();
+    validate_stack_frames_with_bounds(initial_context, image_base, stack_limit, stack_base)
 }
 
 /// Verify DRx registers using TinyVM

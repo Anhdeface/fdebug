@@ -76,19 +76,121 @@ extern "system" {
     pub fn AddVectoredExceptionHandler(First: u32, Handler: Option<unsafe extern "system" fn(*mut EXCEPTION_POINTERS) -> i32>) -> *mut std::ffi::c_void;
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct M128A {
+    pub Low: u64,
+    pub High: i64,
+}
+
 #[repr(C, align(16))]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct XSAVE_FORMAT {
+    pub ControlWord: u16,
+    pub StatusWord: u16,
+    pub TagWord: u8,
+    pub Reserved1: u8,
+    pub ErrorOpcode: u16,
+    pub ErrorOffset: u32,
+    pub ErrorSelector: u16,
+    pub Reserved2: u16,
+    pub DataOffset: u32,
+    pub DataSelector: u16,
+    pub Reserved3: u16,
+    pub MxCsr: u32,
+    pub MxCsr_Mask: u32,
+    pub FloatRegisters: [M128A; 8],
+    pub XmmRegisters: [M128A; 16],
+    pub Reserved4: [u8; 96],
+}
+
+impl Default for XSAVE_FORMAT {
+    fn default() -> Self {
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+#[repr(C, align(16))]
+#[derive(Copy, Clone)]
 pub struct CONTEXT {
-    pub P1Home: u64, pub P2Home: u64, pub P3Home: u64, pub P4Home: u64, pub P5Home: u64, pub P6Home: u64,
+    // 0x000..0x030: Register parameter home addresses
+    pub P1Home: u64,
+    pub P2Home: u64,
+    pub P3Home: u64,
+    pub P4Home: u64,
+    pub P5Home: u64,
+    pub P6Home: u64,
+
+    // 0x030..0x038: Control flags
     pub ContextFlags: u32,
     pub MxCsr: u32,
-    pub SegCs: u16, pub SegDs: u16, pub SegEs: u16, pub SegFs: u16, pub SegGs: u16, pub SegSs: u16,
+
+    // 0x038..0x048: Segment registers & processor flags
+    pub SegCs: u16,
+    pub SegDs: u16,
+    pub SegEs: u16,
+    pub SegFs: u16,
+    pub SegGs: u16,
+    pub SegSs: u16,
     pub EFlags: u32,
-    pub Dr0: u64, pub Dr1: u64, pub Dr2: u64, pub Dr3: u64, pub Dr6: u64, pub Dr7: u64,
-    pub Rax: u64, pub Rcx: u64, pub Rdx: u64, pub Rbx: u64, pub Rsp: u64, pub Rbp: u64, pub Rsi: u64, pub Rdi: u64,
-    pub R8: u64, pub R9: u64, pub R10: u64, pub R11: u64, pub R12: u64, pub R13: u64, pub R14: u64, pub R15: u64,
+
+    // 0x048..0x078: Debug registers
+    pub Dr0: u64,
+    pub Dr1: u64,
+    pub Dr2: u64,
+    pub Dr3: u64,
+    pub Dr6: u64,
+    pub Dr7: u64,
+
+    // 0x078..0x0F8: Integer registers
+    pub Rax: u64,
+    pub Rcx: u64,
+    pub Rdx: u64,
+    pub Rbx: u64,
+    pub Rsp: u64,
+    pub Rbp: u64,
+    pub Rsi: u64,
+    pub Rdi: u64,
+    pub R8: u64,
+    pub R9: u64,
+    pub R10: u64,
+    pub R11: u64,
+    pub R12: u64,
+    pub R13: u64,
+    pub R14: u64,
+    pub R15: u64,
+
+    // 0x0F8..0x100: Instruction pointer
     pub Rip: u64,
-    // ... other fields if needed, but these are enough for our use case
+
+    // 0x100..0x300: Floating-point and SIMD save area (512 bytes)
+    pub FltSave: XSAVE_FORMAT,
+
+    // 0x300..0x4A0: Vector register area (26 * 16 = 416 bytes)
+    pub VectorRegister: [M128A; 26],
+    pub VectorControl: u64, // 0x4A0..0x4A8
+
+    // 0x4A8..0x4D0: Special debug control & branch trace registers
+    pub DebugControl: u64,        // 0x4A8
+    pub LastBranchToRip: u64,     // 0x4B0
+    pub LastBranchFromRip: u64,   // 0x4B8
+    pub LastExceptionToRip: u64,   // 0x4C0
+    pub LastExceptionFromRip: u64, // 0x4C8
 }
+
+impl Default for CONTEXT {
+    fn default() -> Self {
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+// Compile-Time Layout Assertions
+const _: () = {
+    assert!(core::mem::size_of::<CONTEXT>() == 1232);
+    assert!(core::mem::align_of::<CONTEXT>() == 16);
+    assert!(core::mem::size_of::<XSAVE_FORMAT>() == 512);
+    assert!(core::mem::size_of::<M128A>() == 16);
+};
 
 // ============================================================================
 // 128-SHARD ARCHITECTURE WITH ACTIVE/DECOY DISTRIBUTION
@@ -974,3 +1076,25 @@ pub fn trigger_silent_poisoning() {
     // 5. Disable Diagnostics (Blinding the attacker)
     DIAGNOSTIC_MODE.store(false, Ordering::SeqCst);
 }
+
+// ============================================================================
+// LOCK-FREE DECOY REGION TRACKING (Feature F7)
+// ============================================================================
+
+/// Maximum number of tracked decoy memory regions.
+/// Fixed at 8 to eliminate heap allocations and ensure O(1) wait-free VEH dispatch.
+pub const MAX_DECOY_REGIONS: usize = 8;
+
+/// Lock-free, zero-allocation storage for decoy regions.
+/// Each element is a pair of (AtomicUsize [base_address], AtomicUsize [region_size]).
+/// An entry with base == 0 or size == 0 represents an inactive/empty slot.
+pub static DECOY_REGIONS: [(AtomicUsize, AtomicUsize); MAX_DECOY_REGIONS] = [
+    (AtomicUsize::new(0), AtomicUsize::new(0)),
+    (AtomicUsize::new(0), AtomicUsize::new(0)),
+    (AtomicUsize::new(0), AtomicUsize::new(0)),
+    (AtomicUsize::new(0), AtomicUsize::new(0)),
+    (AtomicUsize::new(0), AtomicUsize::new(0)),
+    (AtomicUsize::new(0), AtomicUsize::new(0)),
+    (AtomicUsize::new(0), AtomicUsize::new(0)),
+    (AtomicUsize::new(0), AtomicUsize::new(0)),
+];

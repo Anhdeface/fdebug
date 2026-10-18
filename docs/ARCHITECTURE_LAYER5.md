@@ -142,6 +142,8 @@ TinyVM 2.0 LTP Map      SipHash Constants       128 Shard Masks
    Each of the 128 atomic shards in `global_state.rs` initializes to `mix_seed(seed, index)` to represent zero suspicion.
 4. **Volatile Scrubbing Buffers**:
    `SecureBuffer<N>` passes the reconstructed seed to scramble memory before volatile zeroing on drop.
+5. **Layer 3 Master VEH Heartbeat & Poisoning Seeds**:
+   `enhanced_veh.rs` derives the TinyVM hardware heartbeat verification constant ($Dr0 = \text{VM\_KEY} \times 0\text{x}13371337$) and context poisoning seeds from the dynamic master seed, ensuring that hardware breakpoints and single-step traps cleanly discern legitimate execution from debugger tampering.
 
 ---
 

@@ -272,11 +272,8 @@ pub fn heartbeat_check(seed: u32) -> u64 {
         // But pe_integrity doesn't depend on global_state for time yet.
         unsafe {
             // Harmonized Watchdog Timestamp: read 64-bit time (uptime in 100ns units)
-            // matching anti_dump::check_system_liveness_via_kuser (FLAW-05)
-            // 0x7FFE0014 is 4-byte aligned, so read two 32-bit words to avoid alignment violation
-            let low = (0x7FFE0014 as *const u32).read_volatile() as u64;
-            let high = (0x7FFE0018 as *const u32).read_volatile() as u64;
-            let current_uptime = (high << 32) | low;
+            // matching anti_dump::check_system_liveness_via_kuser (FLAW-05 / Feature F8)
+            let current_uptime = crate::protector::anti_dump::read_kuser_time_lock_free(0x7FFE0014);
             crate::protector::global_state::LAST_VM_HEARTBEAT.store(current_uptime, Ordering::Relaxed);
         }
     } else {

@@ -551,7 +551,7 @@ fn test_protection_integration() {
 }
 ```
 
-Running multiple `Protector` instances consecutively within the same process can trigger header erasure conflicts (Windows Error 193) because anti-dump erases critical NT headers.
+Running multiple `Protector` instances consecutively within the same process can trigger header erasure conflicts (Windows Error 193) because anti-dump erases critical NT headers. Additionally, decoy guard pages (`PAGE_GUARD` / `PAGE_NOACCESS`) registered in the lock-free atomic table (`MAX_DECOY_REGIONS = 8`) and Master VEH handlers remain bound to the host process address space, necessitating subprocess isolation for deterministic verification.
 
 ---
 
@@ -559,7 +559,7 @@ Running multiple `Protector` instances consecutively within the same process can
 
 1. **Seed Freshness**: Always use `setup_anti_debug!(get_dynamic_seed())`. Never use hardcoded constants (`0xDEADBEEF`, `0x12345678`).
 2. **Data Lifetime**: Consume data immediately within the `run_secure` closure; never clone sensitive data into external global variables.
-3. **Formal Verification Compliance**: The repository includes 125 automated tests, 30 Verus theorems, and 47 Bolero harnesses. See `docs/FDEBUG_COMPLETE_GUIDE.md` for verification instructions.
+3. **Formal Verification Compliance**: The repository includes 325+ automated tests workspace-wide across root crate and 24 verification suite test binaries (100% pass rate), 35 Verus deductive theorems, and 75 Bolero property harnesses. See `docs/FDEBUG_COMPLETE_GUIDE.md` for verification instructions.
 
 ---
 
