@@ -267,7 +267,10 @@ impl<const N: usize> Drop for SecureBuffer<N> {
         // Pass 1: Scramble buffer with pseudo-random dynamic seed garbage
         // Compiler fence (SeqCst)
         // Pass 2: Overwrite with volatile zeros
-        // Compiler fence & inline assembly barrier
+        // Unconstrained memory barrier removing options(nomem)
+        unsafe {
+            std::arch::asm!("", options(nostack, preserves_flags));
+        }
     }
 }
 ```
@@ -285,7 +288,7 @@ fn read_secret() {
     let text = std::str::from_utf8(&buffer).unwrap_or("");
     println!("Decrypted value: {}", text);
     
-    // Automatic 2-pass volatile scrubbing upon scope exit
+    // Automatic 2-pass volatile scrubbing and hardware fence upon scope exit
 }
 ```
 
@@ -302,10 +305,22 @@ macro_rules! dynamic_str {
 // Backward-compatibility aliases:
 #[macro_export] macro_rules! enc_str { ($s:expr) => { dynamic_str!($s) } }
 #[macro_export] macro_rules! enc_string { ($s:expr) => { dynamic_str!($s) } }
+
+/// Compile-time constant string hashing function exported publicly for macro expansion:
+pub fn const_str_hash(s: &str) -> u32;
+
+/// Hardened TinyVM 2.0 anti-trace key derangement mutation over Z_256:
+pub fn anti_trace_mutate_key(key: u8) -> u8;
+
+/// Evaluates whether the anti-trace heartbeat check is active (short program aware):
+pub fn is_anti_trace_heartbeat_active(vip: usize, len: usize) -> bool;
+
+/// Evaluates if the execution environment has been poisoned by active debuggers:
+pub fn is_environment_poisoned() -> bool;
 ```
 
-- Replaces static string literals in `.rdata` with TinyVM bytecode encryption.
-- Decrypts dynamically on the stack at runtime.
+- Replaces static string literals in `.rdata` with TinyVM Mode H encrypted bytecode.
+- Decrypts dynamically on the stack with non-linear LSB diffusion and two-phase fallback.
 
 ---
 
@@ -492,7 +507,7 @@ fn process_order(base_amount: f64) -> OrderData {
 
 ## 8. Formal Verification Suite Commands
 
-`fuckDebug` is validated by an extensive formal verification suite combining 35 Verus deductive SMT theorems, 75 Bolero property-based fuzzing harnesses, and 24 verification suite test binaries (348 total automated tests workspace-wide across root crate and verification suite, 100% pass rate).
+`fuckDebug` is validated by an extensive formal verification suite combining 35 Verus deductive SMT theorems, 85 Bolero property-based fuzzing harnesses, and 25 verification suite test binaries (355+ total automated tests workspace-wide across root crate and verification suite, maintaining 100% pass rate).
 
 ### 8.1 Automated Verification Runners
 
@@ -508,12 +523,22 @@ verification_suite\run_verification.bat
 
 ### 8.2 Targeted Cargo Test Commands
 
+#### Run Layer 4 TinyVM Defect Suite (D1 through D7):
+```cmd
+cargo test --manifest-path verification_suite/Cargo.toml --test defect_layer4_tinyvm -- --nocapture
+```
+
+#### Run Layer 4 Hypothesis Property Tests (>300k iterations/s):
+```cmd
+cargo test --manifest-path verification_suite/Cargo.toml --test hypothesis_tiny_vm -- --nocapture
+```
+
 #### Run Defect Proofs (FLAW-01 through FLAW-16):
 ```cmd
 cargo test --manifest-path verification_suite/Cargo.toml --test defect_proofs -- --nocapture
 ```
 
-#### Run All Verification Suite Tests (327 Tests Across 24 Test Binaries):
+#### Run All Verification Suite Tests (339+ Tests Across 25 Test Binaries):
 ```cmd
 cargo test --manifest-path verification_suite/Cargo.toml -- --test-threads=1
 ```

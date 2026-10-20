@@ -22,9 +22,89 @@ use crate::protector::pe_integrity::{heartbeat_check, INTEGRITY_TOKEN};
 use crate::protector::global_state::POISON_SEED;
 
 // --- [START] FFI & INTRINSICS ---
+#[repr(C)]
+struct MemoryBasicInformation {
+    base_address: *mut std::ffi::c_void,
+    allocation_base: *mut std::ffi::c_void,
+    allocation_protect: u32,
+    alignment1: u32,
+    region_size: usize,
+    state: u32,
+    protect: u32,
+    type_: u32,
+    alignment2: u32,
+}
+
 #[link(name = "kernel32")]
 extern "system" {
     fn QueryThreadCycleTime(ThreadHandle: *mut std::ffi::c_void, CycleTime: *mut u64) -> i32;
+    fn VirtualQuery(
+        lpAddress: *const std::ffi::c_void,
+        lpBuffer: *mut MemoryBasicInformation,
+        dwLength: usize,
+    ) -> usize;
+}
+
+#[inline(always)]
+unsafe fn is_valid_readable_range(addr: usize, len: usize) -> bool {
+    if addr < 0x10000 || addr > 0x7FFFFFFFFFFF || len == 0 {
+        return false;
+    }
+    let mut mbi: MemoryBasicInformation = std::mem::zeroed();
+    let res = VirtualQuery(
+        addr as *const std::ffi::c_void,
+        &mut mbi,
+        std::mem::size_of::<MemoryBasicInformation>(),
+    );
+    if res == 0 {
+        return false;
+    }
+    if mbi.state != 0x1000 {
+        return false;
+    }
+    if (mbi.protect & 0x101) != 0 {
+        return false;
+    }
+    const READ_MASK: u32 = 0x02 | 0x04 | 0x08 | 0x20 | 0x40 | 0x80;
+    if (mbi.protect & READ_MASK) == 0 {
+        return false;
+    }
+    let offset_in_region = addr.saturating_sub(mbi.base_address as usize);
+    if offset_in_region.saturating_add(len) > mbi.region_size {
+        return false;
+    }
+    true
+}
+
+#[inline(always)]
+unsafe fn is_valid_writable_range(addr: usize, len: usize) -> bool {
+    if addr < 0x10000 || addr > 0x7FFFFFFFFFFF || len == 0 {
+        return false;
+    }
+    let mut mbi: MemoryBasicInformation = std::mem::zeroed();
+    let res = VirtualQuery(
+        addr as *const std::ffi::c_void,
+        &mut mbi,
+        std::mem::size_of::<MemoryBasicInformation>(),
+    );
+    if res == 0 {
+        return false;
+    }
+    if mbi.state != 0x1000 {
+        return false;
+    }
+    if (mbi.protect & 0x101) != 0 {
+        return false;
+    }
+    const WRITE_MASK: u32 = 0x04 | 0x08 | 0x40 | 0x80;
+    if (mbi.protect & WRITE_MASK) == 0 {
+        return false;
+    }
+    let offset_in_region = addr.saturating_sub(mbi.base_address as usize);
+    if offset_in_region.saturating_add(len) > mbi.region_size {
+        return false;
+    }
+    true
 }
 
 #[inline(always)]
@@ -113,12 +193,25 @@ fn create_ltp_map(mut seed: u32) -> [u8; 256] {
     map
 }
 
+/// Helper to determine whether the runtime environment seed has been actively poisoned.
+/// Distinguishes between clean initialized seeds and active debugger traps.
+#[inline(always)]
+pub fn is_environment_poisoned() -> bool {
+    let poison_val = POISON_SEED.load(Ordering::Relaxed);
+    let expected_poison = 0xCAFEBABE1337BEEF_u64 ^ (get_dynamic_seed() as u64);
+    poison_val == 0xDEADBEEF || (poison_val != 0 && poison_val != expected_poison)
+}
+
 /// Initialize the One-Way Logic-to-Physical Mapping
 /// **Fail-Deadly**: If a known bad seed is detected, it mixes in RDTSC+ASLR entropy
 /// to create a unique, non-reproducible mapping that silently corrupts execution.
 fn init_vm_mapping() {
     LTP_MAP.get_or_init(|| {
-        let seed = get_dynamic_seed();
+        let seed = if is_environment_poisoned() {
+            0xDEADBEEF
+        } else {
+            get_dynamic_seed()
+        };
         create_ltp_map(seed)
     });
 }
@@ -128,7 +221,7 @@ fn init_vm_mapping() {
 // ============================================================================
 
 /// Compile-time hash function using FNV-1a variant with location-dependent seed
-pub(crate) const fn const_str_hash(s: &str) -> u32 {
+pub const fn const_str_hash(s: &str) -> u32 {
     let mut hash = 0x811C9DC5u32;
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -204,7 +297,7 @@ impl<const N: usize> Drop for SecureBuffer<N> {
         }
         std::sync::atomic::compiler_fence(Ordering::SeqCst);
         #[cfg(target_arch = "x86_64")]
-        unsafe { std::arch::asm!("", options(nomem, nostack, preserves_flags)); }
+        unsafe { std::arch::asm!("", options(nostack, preserves_flags)); }
     }
 }
 
@@ -347,8 +440,7 @@ macro_rules! dynamic_str {
 
         let mut buffer = SecureBuffer::<S_LEN>::new();
         let poison_val = $crate::protector::global_state::POISON_SEED.load(Ordering::Relaxed);
-        let expected_poison = 0xCAFEBABE1337BEEF_u64 ^ (get_dynamic_seed() as u64);
-        let is_poisoned = poison_val != 0 && poison_val != expected_poison;
+        let is_poisoned = $crate::protector::tiny_vm::is_environment_poisoned();
         
         if is_poisoned {
             let fake_seed = black_box(poison_val.wrapping_mul(0x5DEECE66D));
@@ -369,13 +461,9 @@ macro_rules! dynamic_str {
             let mut bc_idx = 0;
             let bc_key = (HASH & 0xFF) as u8;
             let mut rolling_key: u8 = 0;
-            
-            // External entropy assumption for macro expansion: 0x42 (Default state)
-            // The runtime VM will use the real atomic value.
-            const DEFAULT_GLOBAL_KEY: u8 = 0x42; 
 
-            // Snapshot integrity token for consistent encoding of this session
-            let integrity_snapshot = $crate::protector::pe_integrity::INTEGRITY_TOKEN.load(std::sync::atomic::Ordering::Relaxed) as u8;
+            // Snapshot integrity token with full 64-bit diffusion for consistent encoding of this session
+            let integrity_snapshot = $crate::protector::tiny_vm::diffuse_token($crate::protector::pe_integrity::INTEGRITY_TOKEN.load(std::sync::atomic::Ordering::Relaxed));
 
             // Advanced Rolling Key Encoding Logic (Multi-Stage Mixing)
             // Decryption: real = (raw ^ key ^ enc_key ^ integrity_token).wrapping_add(pos_salt)
@@ -391,10 +479,12 @@ macro_rules! dynamic_str {
                     bytecode[bc_idx] = raw;
                     bc_idx += 1;
                     
-                    // 3. Update Rolling Key (Non-linear Feedback)
+                    // 3. Update Rolling Key (Non-linear Feedback - Mode H)
                     rolling_key = rolling_key.wrapping_add(raw).wrapping_mul(0x1F);
-                    rolling_key ^= rolling_key.rotate_right(3) ^ 0x3C;
-                    rolling_key ^= DEFAULT_GLOBAL_KEY;
+                    rolling_key ^= (rolling_key << 1) ^ 0x3C;
+                    let nl = ((rolling_key >> 2) & (rolling_key >> 3)) & 1;
+                    rolling_key ^= nl;
+                    rolling_key ^= $crate::protector::global_state::GLOBAL_VIRTUAL_MACHINE_KEY.load(std::sync::atomic::Ordering::Relaxed);
                 }
             };
 
@@ -505,6 +595,22 @@ pub fn diffuse_token(token: u64) -> u8 {
     lower ^ fold
 }
 
+/// Mutate rolling key on anti-trace timing anomaly detection.
+/// Implements a secure non-involutory permutation with zero fixed points and zero 2-cycles
+/// over Z_256, defeating involution cancellation attacks: f(f(x)) != x for all x in Z_256.
+#[inline(always)]
+pub fn anti_trace_mutate_key(key: u8) -> u8 {
+    (key.wrapping_add(0x37)).rotate_left(6)
+}
+
+/// Determine whether the anti-trace thread cycle heartbeat check is active.
+/// Evaluates at regular 16-instruction cadence ((vip & 0xF) == 0), and eliminates
+/// the 15-byte VIP blind spot for short programs (len <= 15).
+#[inline(always)]
+pub fn is_anti_trace_heartbeat_active(vip: usize, len: usize) -> bool {
+    (vip & 0xF) == 0 || (len <= 15 && (vip == len || (vip & 0x3) == 0))
+}
+
 /// Fetch and decode next instruction using rolling key XOR chain
 /// This creates temporal dependency that defeats static analysis
 #[inline(always)]
@@ -544,6 +650,8 @@ unsafe fn fetch_next_instruction(
         state.key ^= state.key.rotate_right(3) ^ 0x3C;
     } else {
         state.key ^= (state.key << 1) ^ 0x3C;
+        let nl = ((state.key >> 2) & (state.key >> 3)) & 1;
+        state.key ^= nl;
     }
     state.key ^= global_entropy;
     
@@ -591,6 +699,8 @@ unsafe fn fetch_operand_byte(
         state.key ^= state.key.rotate_right(3) ^ 0x3C;
     } else {
         state.key ^= (state.key << 1) ^ 0x3C;
+        let nl = ((state.key >> 2) & (state.key >> 3)) & 1;
+        state.key ^= nl;
     }
     state.key ^= global_entropy;
 
@@ -622,6 +732,8 @@ pub fn encode_bytecode(plain_bytes: &[u8], encryption_key: u8) -> Vec<u8> {
 
         state_key = state_key.wrapping_add(raw_byte).wrapping_mul(0x1F);
         state_key ^= (state_key << 1) ^ 0x3C;
+        let nl = ((state_key >> 2) & (state_key >> 3)) & 1;
+        state_key ^= nl;
         state_key ^= global_entropy;
     }
     encoded
@@ -644,6 +756,8 @@ pub fn encode_bytecode_array<const N: usize>(plain_bytes: &[u8; N], encryption_k
 
         state_key = state_key.wrapping_add(raw_byte).wrapping_mul(0x1F);
         state_key ^= (state_key << 1) ^ 0x3C;
+        let nl = ((state_key >> 2) & (state_key >> 3)) & 1;
+        state_key ^= nl;
         state_key ^= global_entropy;
     }
     encoded
@@ -754,8 +868,10 @@ unsafe fn op_pop(
 unsafe fn op_dup(
     bytecode: &[u8], vm: &mut TinyVm, state: &mut VmExecutionState, encryption_key: u8,
 ) {
-    let val = vm.peek();
-    vm.push(val);
+    if vm.sp >= 1 {
+        let val = vm.peek();
+        vm.push(val);
+    }
     fetch_next_instruction(bytecode, state, encryption_key);
 }
 
@@ -800,8 +916,10 @@ unsafe fn op_or(
 unsafe fn op_not(
     bytecode: &[u8], vm: &mut TinyVm, state: &mut VmExecutionState, encryption_key: u8,
 ) {
-    let a = vm.pop();
-    vm.push(!a);
+    if vm.sp >= 1 {
+        let a = vm.pop();
+        vm.push(!a);
+    }
     fetch_next_instruction(bytecode, state, encryption_key);
 }
 
@@ -901,12 +1019,34 @@ unsafe fn op_cmp_lt(
     fetch_next_instruction(bytecode, state, encryption_key);
 }
 
+/// Re-synchronize rolling key at jump target by evolving state key across bytecode[0..target].
+#[inline(always)]
+fn synchronize_jump_key(bytecode: &[u8], target: usize, is_legacy: bool) -> u8 {
+    let mut key: u8 = 0;
+    let global_entropy = crate::protector::global_state::GLOBAL_VIRTUAL_MACHINE_KEY
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let limit = target.min(bytecode.len());
+    for &raw_byte in &bytecode[..limit] {
+        key = key.wrapping_add(raw_byte).wrapping_mul(0x1F);
+        if is_legacy {
+            key ^= key.rotate_right(3) ^ 0x3C;
+        } else {
+            key ^= (key << 1) ^ 0x3C;
+            let nl = ((key >> 2) & (key >> 3)) & 1;
+            key ^= nl;
+        }
+        key ^= global_entropy;
+    }
+    key
+}
+
 /// Unconditional jump
 unsafe fn op_jump(
     bytecode: &[u8], _vm: &mut TinyVm, state: &mut VmExecutionState, encryption_key: u8,
 ) {
     let target = fetch_operand_byte(bytecode, state, encryption_key) as usize;
     state.vip = target;
+    state.key = synchronize_jump_key(bytecode, target, state.is_legacy);
     fetch_next_instruction(bytecode, state, encryption_key);
 }
 
@@ -918,6 +1058,7 @@ unsafe fn op_jz(
     let val = vm.pop();
     if val == 0 {
         state.vip = target;
+        state.key = synchronize_jump_key(bytecode, target, state.is_legacy);
     }
     fetch_next_instruction(bytecode, state, encryption_key);
 }
@@ -930,6 +1071,7 @@ unsafe fn op_jnz(
     let val = vm.pop();
     if val != 0 {
         state.vip = target;
+        state.key = synchronize_jump_key(bytecode, target, state.is_legacy);
     }
     fetch_next_instruction(bytecode, state, encryption_key);
 }
@@ -950,10 +1092,10 @@ unsafe fn op_read_mem_u8(
     bytecode: &[u8], vm: &mut TinyVm, state: &mut VmExecutionState, encryption_key: u8,
 ) {
     let addr = vm.pop() as *const u8;
-    let result: u8 = if addr.is_null() || (addr as usize) < 0x10000 || (addr as usize) > 0x7FFFFFFFFFFF {
-        0
-    } else {
+    let result: u8 = if is_valid_readable_range(addr as usize, 1) {
         std::ptr::read_volatile(addr)
+    } else {
+        0
     };
     vm.push(result as u64);
     fetch_next_instruction(bytecode, state, encryption_key);
@@ -964,10 +1106,10 @@ unsafe fn op_read_mem_u32(
     bytecode: &[u8], vm: &mut TinyVm, state: &mut VmExecutionState, encryption_key: u8,
 ) {
     let addr = vm.pop() as *const u32;
-    let result: u32 = if addr.is_null() || (addr as usize) < 0x10000 || (addr as usize) > 0x7FFFFFFFFFFF {
-        0
-    } else {
+    let result: u32 = if is_valid_readable_range(addr as usize, 4) {
         std::ptr::read_volatile(addr)
+    } else {
+        0
     };
     vm.push(result as u64);
     fetch_next_instruction(bytecode, state, encryption_key);
@@ -978,10 +1120,10 @@ unsafe fn op_read_mem_u64(
     bytecode: &[u8], vm: &mut TinyVm, state: &mut VmExecutionState, encryption_key: u8,
 ) {
     let addr = vm.pop() as *const u64;
-    let result: u64 = if addr.is_null() || (addr as usize) < 0x10000 || (addr as usize) > 0x7FFFFFFFFFFF {
-        0
-    } else {
+    let result: u64 = if is_valid_readable_range(addr as usize, 8) {
         std::ptr::read_volatile(addr)
+    } else {
+        0
     };
     vm.push(result);
     fetch_next_instruction(bytecode, state, encryption_key);
@@ -994,7 +1136,7 @@ unsafe fn op_write_mem_u8(
     if vm.sp >= 2 {
         let value = vm.pop() as u8;
         let addr = vm.pop() as *mut u8;
-        if !addr.is_null() && (addr as usize) >= 0x10000 && (addr as usize) <= 0x7FFFFFFFFFFF {
+        if is_valid_writable_range(addr as usize, 1) {
             write_volatile(addr, value);
         }
     }
@@ -1028,25 +1170,18 @@ unsafe fn op_cpuid(
     fetch_next_instruction(bytecode, state, encryption_key);
 }
 
-/// Read from I/O port
+/// Read from I/O port (privileged in user-mode, safely trips trap)
 unsafe fn op_in_port(
     bytecode: &[u8], vm: &mut TinyVm, state: &mut VmExecutionState, encryption_key: u8,
 ) {
-    let port = fetch_operand_byte(bytecode, state, encryption_key) as u16;
-    let result: u32;
-    asm!("in eax, dx", out("eax") result, in("dx") port, options(nomem, nostack));
-    vm.push(result as u64);
-    fetch_next_instruction(bytecode, state, encryption_key);
+    op_trap(bytecode, vm, state, encryption_key);
 }
 
-/// Write to I/O port
+/// Write to I/O port (privileged in user-mode, safely trips trap)
 unsafe fn op_out_port(
     bytecode: &[u8], vm: &mut TinyVm, state: &mut VmExecutionState, encryption_key: u8,
 ) {
-    let port = fetch_operand_byte(bytecode, state, encryption_key) as u16;
-    let value = vm.pop() as u32;
-    asm!("out dx, eax", in("dx") port, in("eax") value, options(nomem, nostack));
-    fetch_next_instruction(bytecode, state, encryption_key);
+    op_trap(bytecode, vm, state, encryption_key);
 }
 
 /// Early bird debugger check via PEB
@@ -1084,7 +1219,7 @@ unsafe fn op_reconstruct_str(
     let len = vm.pop() as usize;
     let byte_key = black_box(key as u8);
 
-    if !addr.is_null() && (addr as usize) >= 0x10000 && (addr as usize) <= 0x7FFFFFFFFFFF {
+    if len <= 4096 && is_valid_writable_range(addr as usize, len) {
         for i in 0..len {
             let curr_ptr = addr.add(i);
             let mut val = std::ptr::read_volatile(curr_ptr);
@@ -1203,11 +1338,15 @@ pub const ANTI_TRACE_CYCLE_THRESHOLD: u64 = 2_000_000;
 /// - Randomized mapping (Logic -> Physical) defeats static V-Table analysis.
 #[inline(never)]
 pub fn vm_execute(bytecode: &[u8], encryption_key: u8, context_key: u64) -> u64 {
-    // Ensure mapping is initialized
-    init_vm_mapping();
-    
-    // Safety: LTP_MAP is initialized
-    let ltp_map = LTP_MAP.get().expect("VM Mapping not initialized");
+    // Dynamic Chaos Trap re-evaluation against late debugger attachment / seed poisoning
+    let dynamic_map;
+    let ltp_map: &[u8; 256] = if is_environment_poisoned() {
+        dynamic_map = create_ltp_map(0xDEADBEEF);
+        &dynamic_map
+    } else {
+        init_vm_mapping();
+        LTP_MAP.get().expect("VM Mapping not initialized")
+    };
 
     // Mix the context key with the global VM key
     let global_vm_key = crate::protector::global_state::get_current_vm_key() as u64;
@@ -1241,8 +1380,19 @@ pub fn vm_execute(bytecode: &[u8], encryption_key: u8, context_key: u64) -> u64 
 
             fetch_next_instruction(bytecode, &mut state, encryption_key);
 
+            const MAX_VM_STEPS: usize = 10_000;
+            let mut step_count = 0usize;
+
             loop {
                 if state.should_exit {
+                    break;
+                }
+
+                step_count += 1;
+                if step_count > MAX_VM_STEPS {
+                    state.hit_trap = true;
+                    state.exit_value = 0;
+                    state.should_exit = true;
                     break;
                 }
 
@@ -1250,12 +1400,12 @@ pub fn vm_execute(bytecode: &[u8], encryption_key: u8, context_key: u64) -> u64 
                 let entropy = current_rip_marker ^ state.anchor_rip;
                 state.key ^= entropy as u8;
 
-                if (state.vip & 0xF) == 0 {
+                if is_anti_trace_heartbeat_active(state.vip, bytecode.len()) {
                     let current_cycles = get_thread_cycles();
                     let delta = current_cycles.wrapping_sub(state.last_cycles);
                     
                     if delta > ANTI_TRACE_CYCLE_THRESHOLD {
-                        state.key ^= 0x55;
+                        state.key = anti_trace_mutate_key(state.key);
                     }
                     state.last_cycles = current_cycles;
                 }
@@ -1273,6 +1423,10 @@ pub fn vm_execute(bytecode: &[u8], encryption_key: u8, context_key: u64) -> u64 
         (state.exit_value, state.hit_trap, state.exited_cleanly)
     };
 
+    if is_environment_poisoned() {
+        return 0;
+    }
+
     // 1. Try modern hardened execution (Mode H)
     let (res_h, hit_trap_h, exited_h) = run_loop(false);
     if exited_h && !hit_trap_h {
@@ -1285,7 +1439,7 @@ pub fn vm_execute(bytecode: &[u8], encryption_key: u8, context_key: u64) -> u64 
         return res_l;
     }
 
-    res_h
+    0
 }
 
 // ============================================================================

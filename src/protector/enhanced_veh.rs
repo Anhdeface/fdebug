@@ -439,7 +439,8 @@ unsafe fn verify_drx_integrity(context: &CONTEXT) -> bool {
     // 4. Encode using authentic rolling-key recurrence, position salt, and integrity token
     let mut encoded = Vec::with_capacity(plain_bc.len());
     let mut state_key: u8 = 0;
-    let integrity_val = crate::protector::pe_integrity::INTEGRITY_TOKEN.load(Ordering::Relaxed) as u8;
+    let token_raw = crate::protector::pe_integrity::INTEGRITY_TOKEN.load(Ordering::Relaxed);
+    let integrity_val = crate::protector::tiny_vm::diffuse_token(token_raw);
     let global_entropy = crate::protector::global_state::GLOBAL_VIRTUAL_MACHINE_KEY.load(Ordering::Relaxed);
     
     for (vip, &plain) in plain_bc.iter().enumerate() {
@@ -448,7 +449,9 @@ unsafe fn verify_drx_integrity(context: &CONTEXT) -> bool {
         encoded.push(raw_byte);
         
         state_key = state_key.wrapping_add(raw_byte).wrapping_mul(0x1F);
-        state_key ^= state_key.rotate_right(3) ^ 0x3C;
+        state_key ^= (state_key << 1) ^ 0x3C;
+        let nl = ((state_key >> 2) & (state_key >> 3)) & 1;
+        state_key ^= nl;
         state_key ^= global_entropy;
     }
     

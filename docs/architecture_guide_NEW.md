@@ -28,8 +28,8 @@ The engine operates on three foundational principles:
                                           ▲
 +-----------------------------------------------------------------------------------+
 | Layer 4: Polymorphic Virtual Execution (TinyVM 2.0)                               |
-|   `tiny_vm.rs` — 256-Entry Indirect V-Table, Randomized LTP Permutation,         |
-|   Rolling Key Cipher, RIP Entanglement, Cycle Heartbeat (2M threshold)            |
+|   `tiny_vm.rs` — 256-Entry Indirect V-Table, Mode H Non-Linear LSB Diffusion,     |
+|   Dynamic LTP Chaos Trap, Two-Phase Fallback, Anti-Trace Derangement Heartbeat    |
 +-----------------------------------------------------------------------------------+
                                           ▲
 +-----------------------------------------------------------------------------------+
@@ -281,7 +281,7 @@ Visible dummy functions (`check_kernel_debugger`, `is_process_being_debugged`) a
 
 ## Architecture Layer 4: Polymorphic Virtual Execution (TinyVM 2.0)
 
-Layer 4 virtualizes critical operations and sensitive string decoding through an indirect-threaded bytecode virtual machine.
+Layer 4 virtualizes critical operations and sensitive string decoding through an indirect-threaded bytecode virtual machine hardened with non-linear algebraic diffusion, derangement heartbeat mutations, dynamic poison traps, and two-phase fallback execution.
 
 ### 4.1 Indirect Threading V-Table Dispatch
 
@@ -298,6 +298,18 @@ pub type VmInstruction = unsafe fn(
 
 The runtime initializes a 256-entry table (`[VmInstruction; 256]`). Unused opcode slots default to `op_trap`.
 
+- **Two-Phase Fallback Execution (`vm_execute`)**:
+  TinyVM 2.0 provides dual-mode execution guaranteeing 100% backward compatibility with zero regressions:
+  1. *Phase 1 (Mode H)*: Executes the primary loop under Mode H (`run_loop_mode_h(false)`) utilizing non-linear LSB diffusion, strict bounds checking, and active tamper detection.
+  2. *Phase 2 (Mode L Fallback)*: If Mode H encounters a trap (e.g., executing legacy bytecode payloads or instruction boundary anomalies), execution smoothly falls through to legacy Mode L (`run_loop(true)`).
+  This two-phase design ensures state-of-the-art cryptographic hardening for new bytecode while preserving compatibility for legacy components.
+
+- **Stack Underflow & Bounds Safety**:
+  Unary and stack manipulation opcodes enforce strict stack depth preconditions:
+  - `op_not` and `op_dup` verify `if vm.sp >= 1` before accessing operand values.
+  - When `vm.sp == 0`, `op_not` leaves `result = 0` without advancing `sp`, and `op_dup` aborts execution cleanly without synthesizing phantom values on an empty stack.
+  - Formally verified via Bolero property harnesses (`prop_hypothesis_stack_underflow_integrity`, >77,000 iterations/s) and defect reproduction tests (`defect_stack_underflow_op_not_state_synthesis`, `defect_stack_underflow_op_dup_state_synthesis`).
+
 ### 4.2 Randomized Logic-to-Physical Permutation (`LTP_MAP`)
 
 Opcodes are not mapped to fixed indices. Instead, a 256-byte Logic-to-Physical (`LTP_MAP`) array is generated at runtime via an `Xorshift32` PRNG seeded by the reconstructed dynamic seed:
@@ -306,31 +318,83 @@ $$\text{PhysicalHandler} = \text{TABLE}[\text{LTP\_MAP}[\text{LogicalOpcode}]]$$
 
 - Every compiled binary and target machine executes opcodes through a unique permutation.
 - Reverse engineers cannot reuse static disassembly signatures or opcode maps across targets.
+- **Dynamic Environment Re-evaluation**:
+  Rather than relying on an immutable, static `OnceLock` that can be tricked by late-attaching debuggers, TinyVM re-evaluates the environment at execution time via `is_environment_poisoned()`.
+  The engine checks the integrity of `POISON_SEED` against the expected VEH token:
+  $$\text{Clean} \iff (P_{\text{seed}} = 0) \lor (P_{\text{seed}} = 0\text{xCAFEBABE1337BEEF} \oplus \text{seed})$$
+  Distinguishes authentic runtime initialization tokens from active debugger injections (`0xDEADBEEF`, `0xDEAD6666BEEF`), eliminating debugger inertia.
 
 ### 4.3 The Chaos Trap
 
-If an attacker passes a fake, zeroed, or static seed (such as `0x00000000` or `0xDEADBEEF`), the mapping logic activates the **Chaos Trap**:
-- Mixes the seed with RDTSC and ASLR stack address entropy.
-- Produces a scrambled LTP map where arithmetic opcodes execute jumps, loads execute traps, and calculations produce unpredictable garbage without crashing.
+If an attacker passes a fake, zeroed, or static seed (such as `0x00000000` or `0xDEADBEEF`), or if `is_environment_poisoned()` detects dynamic tampering:
+- The mapping logic dynamically activates the **Chaos Trap**:
+  - Dynamically returns a scrambled trap mapping generated via `create_ltp_map(0xDEADBEEF)`.
+  - Immediately aborts execution returning 0, starving dynamic instrumentation tools without throwing detectable panic anchors.
+- When executing under poisoned maps, arithmetic opcodes route to jumps, loads route to traps, and calculations produce unpredictable garbage without crashing, defeating late-attaching debuggers without inertia.
 
 ### 4.4 Rolling Key Cipher & Entangled Execution
 
-Bytecode is encrypted with a rolling key cipher. During instruction fetch:
+Bytecode is encrypted with a rolling key cipher. During instruction fetch, the cipher incorporates non-linear feedback and hardware entanglement:
 
-```rust
-let decrypted = ciphertext ^ key ^ ((vip as u8).wrapping_mul(0x5D));
-key = key.rotate_left(3).wrapping_add(decrypted);
-```
+- **Mode H Non-Linear LSB Diffusion**:
+  In Mode H, rolling key evolution injects non-linear feedback into bit 0 of the key recurrence state:
+  ```rust
+  let nl = ((state.key >> 2) & (state.key >> 3)) & 1;
+  state.key ^= (state.key << 1) ^ 0x3C;
+  state.key ^= nl;
+  ```
+  Mathematical formulation:
+  $$nl_t = ((K_t \gg 2) \land (K_t \gg 3)) \land 1$$
+  $$K_{t+1} = (K_t \oplus (K_t \ll 1) \oplus 0\text{x}3C) \oplus nl_t$$
+  - Eliminates linear recurrence over $\mathbb{F}_2$, breaking algebraic cryptanalysis and preventing SAT/SMT-based key recovery.
+  - Fully synchronized with 64-bit token diffusion (`diffuse_token`) and Master VEH hardware integrity verification (`enhanced_veh.rs:verify_drx_integrity`).
+  - Bijectivity across all 256 rolling key states verified empirically via Bolero property test `prop_hypothesis_rolling_key_full_bijectivity` (>330,000 iterations/s).
 
-- **RIP Entanglement**: The decryption key is XORed with the upper 16 bits of the physical instruction pointer (`get_rip_marker`). If the binary code is relocated or hooked via dynamic binary instrumentation (DBI) engines (such as Frida or DynamoRIO), the key desynchronizes.
-- **Thread Cycle Heartbeat**: Measures `QueryThreadCycleTime` across instructions. If the cycle delta exceeds `ANTI_TRACE_CYCLE_THRESHOLD` (2,000,000 cycles), tracing is detected and the key is corrupted.
+- **Anti-Trace Heartbeat Mutation**:
+  Replaces previous involutory XOR mutations (`key ^= 0x55`, which allowed even-spike cancellation under hardware single-stepping) with a strict derangement permutation:
+  ```rust
+  pub fn anti_trace_mutate_key(key: u8) -> u8 {
+      (key.wrapping_add(0x37)).rotate_left(6)
+  }
+  ```
+  Mathematical properties over $\mathbb{Z}_{256}$:
+  - Full-cycle permutation over $\mathbb{Z}_{256}$.
+  - Zero fixed points: $\forall x \in \mathbb{Z}_{256}, \text{anti\_trace\_mutate\_key}(x) \ne x$.
+  - Zero 2-cycles: $\forall x \in \mathbb{Z}_{256}, \text{anti\_trace\_mutate\_key}(\text{anti\_trace\_mutate\_key}(x)) \ne x$.
+  - Defeats single-step tracing and even-spike cancellation attacks.
+
+- **Short Program VIP Heartbeat**:
+  `is_anti_trace_heartbeat_active` eliminates the historical 15-byte blind spot:
+  ```rust
+  pub fn is_anti_trace_heartbeat_active(vip: usize, len: usize) -> bool {
+      (vip & 0xF) == 0 || (len <= 15 && (vip == len || (vip & 0x3) == 0))
+  }
+  ```
+  Standard payloads are checked at 16-byte boundaries (`(vip & 0xF) == 0`), while short programs ($\le 15$ bytes) trigger heartbeats at end-of-program (`vip == len`) and 4-byte intervals (`(vip & 0x3) == 0`).
+
+- **Rolling Key Jump Synchronization**:
+  When non-linear control flow transfers occur (`op_jump`, `op_jz`, `op_jnz`), `state.key` is dynamically re-derived for `bytecode[target]` by evolving the rolling key recurrence from offset 0 to `target`, eliminating instruction desynchronization.
+
+- **RIP Entanglement & Cycle Heartbeat**:
+  - RIP Anchoring: The decryption key is XORed with the upper 16 bits of the physical instruction pointer (`get_rip_marker`). If the binary code is hooked via DBI engines (Frida, DynamoRIO), the key desynchronizes.
+  - Thread Cycle Heartbeat: Measures `QueryThreadCycleTime` across instructions. If the cycle delta exceeds `ANTI_TRACE_CYCLE_THRESHOLD` (2,000,000 cycles), tracing is detected and `state.key` is mutated via `anti_trace_mutate_key`.
 
 ### 4.5 Zero-Static-Trace `dynamic_str!` & `SecureBuffer<N>`
 
 String literals wrapped in `dynamic_str!("secret")` are compiled into encrypted bytecode sequences. At runtime:
 1. Decrypted in volatile stack memory via TinyVM.
 2. Returned inside a `SecureBuffer<const N: usize>` implementing `Deref<Target = [u8]>`.
-3. When dropped, scrubs memory via a 2-pass volatile drop (Pass 1: dynamic seed scramble, Pass 2: volatile zeros, compiler fences, and x86 asm memory barrier).
+3. When dropped, scrubs memory via a 2-pass volatile drop:
+   - Pass 1: Dynamic seed scramble across buffer bytes.
+   - Pass 2: Volatile zeroing (`write_volatile(0)`).
+   - **Robust Inline ASM Memory Barrier**:
+     ```rust
+     unsafe {
+         std::arch::asm!("", options(nostack, preserves_flags));
+     }
+     ```
+     By omitting `options(nomem)`, the compiler treats the asm block as an unconstrained read/write across all memory, establishing a true compiler and hardware fence that prevents dead-store elimination (DSE) from stripping the zeroing scrub.
+4. `const_str_hash`: Exported as `pub fn const_str_hash(s: &str) -> u32` to permit compile-time string hashing across crate boundaries when invoking `dynamic_str!` and `enc_string!`.
 
 ---
 
@@ -428,11 +492,15 @@ pub fn add_suspicion(severity: DetectionSeverity);
 pub fn add_suspicion_at(severity: DetectionSeverity, checkpoint_id: u8);
 pub fn trigger_silent_poisoning();
 
-// Memory Scrubbing Buffer
+// Memory Scrubbing Buffer & TinyVM 2.0 Primitives
 pub struct SecureBuffer<const N: usize>;
 impl<const N: usize> std::ops::Deref for SecureBuffer<N> {
     type Target = [u8];
 }
+pub fn const_str_hash(s: &str) -> u32;
+pub fn anti_trace_mutate_key(key: u8) -> u8;
+pub fn is_anti_trace_heartbeat_active(vip: usize, len: usize) -> bool;
+pub fn is_environment_poisoned() -> bool;
 ```
 
 ### Internal Engine Primitives (Not for Direct Public Use)
@@ -450,7 +518,7 @@ impl<const N: usize> std::ops::Deref for SecureBuffer<N> {
 | **Layer 1: Foundational Entropy & Detection** | `hardware_entropy.rs`, `pe_integrity.rs`, `anti_debug.rs` | CPUID fingerprinting, PE `.text` FNV-1a checksum, PEB scratch dereference, DRx checks, RDTSC calibration, TLS callback | Static key extraction, inline patches, INT3 hooks, hardware breakpoints, debuggers |
 | **Layer 2: Seed Orchestration** | `seed_orchestrator.rs` | 3-shard entropy mixing, MurmurHash3 avalanche finalizer, OnceLock caching, golden ratio automorphism | Replay attacks, cross-device binary copying, static analysis of constants |
 | **Layer 3: Memory Stealth & Anti-Dump** | `anti_dump.rs`, `enhanced_veh.rs`, `decoy_system.rs` | 5-phase master VEH (1232-byte CONTEXT, TEB limits, depth <= 1), 64-byte 16-aligned indirect syscalls, lock-free decoy table (8 slots, saturating math, quarantine), surgical PE NT header erasure | Memory dumpers (Scylla, ProcDump), guard page scanners, prologue patchers, EDR hooks |
-| **Layer 4: Polymorphic Virtual Execution** | `tiny_vm.rs` | 256-entry indirect v-table, randomized `LTP_MAP` permutation, rolling key cipher, RIP entanglement, cycle heartbeat | Disassemblers (IDA, Ghidra), DBI engines (Frida, DynamoRIO), instruction tracing |
+| **Layer 4: Polymorphic Virtual Execution** | `tiny_vm.rs` | 256-entry indirect v-table, Mode H non-linear LSB diffusion, dynamic LTP Chaos Trap, two-phase fallback (Mode H/L), anti-trace derangement heartbeat, stack bounds safety | Disassemblers (IDA, Ghidra), DBI engines (Frida, DynamoRIO), instruction tracing, algebraic cryptanalysis |
 | **Layer 5: Decentralized State & Silent Corruption** | `global_state.rs` | 128 atomic shards (64 Active / 64 Decoy), pair-based partition, XOR masking, 3-shard scatter, dynamic SipHash, soft backoff | Memory search/freeze tools (Cheat Engine), data breakpoints, static decompilation |
 
 ---

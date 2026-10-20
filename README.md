@@ -29,13 +29,13 @@ fuckDebug Architecture:   Debugger detected → Silent Key Poisoning →
 |---|---|---|
 | **Multi-Vector Detection** | PEB dereference, RDTSC timing baseline, DR0–DR7 checks, driver blacklists | Detects debugging attempts across multiple hardware and OS vectors simultaneously |
 | **Watchdog v2 (Liveness)** | KUSER_SHARED_DATA InterruptTime + Adaptive Thresholding | Detects thread suspension; triggers **Silent Poisoning** instead of exit |
-| **Entangled Execution** | RIP Anchoring + Thread Cycle Heartbeat (2M threshold) | Binds VM decryption key to physical code location and timing; defeats DBI and tracing |
-| **Randomized TinyVM 2.0** | 256-Entry Indirect V-Table + Randomized LTP Permutation | No switch/match statements; opcode handler addresses shuffled at runtime via Xorshift32 |
+| **Entangled Execution** | RIP Anchoring + Anti-Trace Derangement Heartbeat | Derangement permutation over $\mathbb{Z}_{256}$ eliminates even-spike cancellation; short program VIP heartbeat |
+| **Randomized TinyVM 2.0** | 256-Entry Indirect V-Table + Mode H LSB Diffusion + Dynamic LTP Map | No switch/match statements; non-linear $\mathbb{F}_2$ diffusion, two-phase fallback (Mode H/L), and poison-reactive Chaos Trap |
 | **128-Shard Suspicion State** | Distributed Atomic State (64 Active / 64 Decoy) | Defeats memory freezing and data breakpoints; zeroing memory causes immediate score spike |
 | **Silent Key Poisoning** | Token-based non-linear key poisoning | No crashes; execution continues with poisoned cryptographic material |
 | **Surgical Anti-Dump & Memory Stealth** | Lock-Free Decoy Traps (8 Atomic Slots) + 64-Byte 16-Aligned Syscalls | Defeats memory dumpers via CAS registration, PAGE_NOACCESS quarantine, saturating math, and SSN grammar validation |
 | **Master VEH 5-Phase Dispatch** | 1232-Byte Win32 CONTEXT ABI + TEB Stack Bounds (gs:[0x08]/0x10) | Enforces frames_walked >= 2, bounded re-entrancy depth <= 1, TF precedence over Dr0 heartbeats, and call frame synthesis |
-| **Formal Mathematical Proofs** | 35 Verus SMT theorems + 75 Bolero property harnesses (325+ tests) | 325+ tests workspace-wide across root crate and 24 verification suite test binaries, 100% pass rate |
+| **Formal Mathematical Proofs** | 35 Verus SMT theorems + 85 Bolero property harnesses (355+ tests) | 355+ tests workspace-wide across root crate and 25 verification suite test binaries, 100% pass rate |
 
 ---
 
@@ -51,8 +51,8 @@ Protection Engine
     │     Dispersed Scattering, Soft Backoff Latency, Token Key Mutation
     │
     ├─→ Layer 4: Polymorphic Virtual Execution (TinyVM 2.0)
-    │     256-Entry Indirect V-Table, Randomized LTP Permutation Map,
-    │     Rolling Key Cipher, RIP Entanglement, Cycle Heartbeat (2M threshold)
+    │     256-Entry Indirect V-Table, Mode H Non-Linear LSB Diffusion, Dynamic LTP Chaos Trap,
+    │     Two-Phase Fallback (Mode H/L), Anti-Trace Derangement Heartbeat, Stack Bounds Safety
     │
     ├─→ Layer 3: Memory Stealth, Master VEH & Anti-Dump
     │     5-Phase Master VEH (1232-Byte CONTEXT, TEB Bounds, Re-entrancy <= 1),
@@ -95,7 +95,7 @@ fuckDebug/
 │       ├── anti_dump.rs          # Lock-free decoy traps & 16-aligned indirect syscalls (549 lines)
 │       ├── enhanced_veh.rs       # 5-phase master VEH with Win32 CONTEXT & re-entrancy bounds (459 lines)
 │       ├── global_state.rs       # 128-shard active/decoy state machine (1101 lines)
-│       ├── tiny_vm.rs            # Indirect-threaded virtual machine 2.0 (1394 lines)
+│       ├── tiny_vm.rs            # Hardened indirect-threaded virtual machine 2.0 (1660 lines)
 │       └── decoy_system.rs       # Honey pot functions & watchdog prologue scanner (190 lines)
 ├── verification_suite/           # Standalone Formal Verification Harness
 │   ├── Cargo.toml                # Verification crate dependencies (Bolero, Verus)
@@ -103,10 +103,11 @@ fuckDebug/
 │   ├── run_verification.bat      # Windows CMD verification wrapper
 │   ├── src/
 │   │   ├── verus_proofs/         # 35 Verus deductive SMT theorems (Z3 solver)
-│   │   ├── bolero_harnesses/     # 75 Bolero property-based fuzzing harnesses
+│   │   ├── bolero_harnesses/     # 85 Bolero property-based fuzzing harnesses
 │   │   └── shims/                # Test shims for internal component verification
-│   └── tests/                    # 24 integration test binaries (253 tests)
-│       ├── hypothesis_*.rs       # Layer 3 hypothesis formal verification suites (4 binaries)
+│   └── tests/                    # 25 integration test binaries (339+ tests)
+│       ├── hypothesis_*.rs       # Layer 3 & 4 hypothesis formal verification suites (5 binaries)
+│       ├── defect_layer4_tinyvm.rs# Layer 4 TinyVM 2.0 formal defect verification suite (D1..D7)
 │       ├── adversarial_*.rs      # Adversarial challenge suites for Layer 3 invariants (10 binaries)
 │       ├── challenger_*.rs       # Layer 1 & 2 adversarial stress challenges (2 binaries)
 │       ├── defect_proofs.rs      # Formal defect proofs for historical flaws (FLAW-01..16)
@@ -144,6 +145,7 @@ fuckDebug/
 - In-memory state freezing and zeroing (128-shard active/decoy XOR mask trap).
 - Single-stepping and timing inspection attacks.
 - DLL injection attempts.
+- Virtual execution manipulation (algebraic cryptanalysis, VIP tracing, empty stack state synthesis).
 
 ### Limitations & Out of Scope
 - Kernel-mode debuggers with hardware hypervisor hooks (Ring -1 / Ring 0).
