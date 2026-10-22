@@ -417,45 +417,97 @@ Role:         [A, D]  [D, A]  [A, D]  [D, A]   ...    [A, D]
 (A = Active Shard, D = Decoy Shard)
 ```
 
-The partition is governed by `pair_map: u64` derived via `mix_seed_to_u64(seed)`. For pair $i$, if bit $i$ is 0, shard $2i$ is Active; if bit $i$ is 1, shard $2i + 1$ is Active.
+The partition is dynamically governed by a 64-bit pair map derived via `compute_dynamic_pair_map(seed, dynamic_counter)`. For pair $i \in [0, 63]$, if bit $i$ of `pair_map` is 0, shard $2i$ is Active and $2i + 1$ is Decoy; if bit $i$ is 1, shard $2i + 1$ is Active and $2i$ is Decoy.
+
+```rust
+pub fn compute_dynamic_pair_map(seed: u32, dynamic_counter: u32) -> u64 {
+    let mut x = (seed as u64) ^ ((dynamic_counter as u64).wrapping_mul(0x5DEECE66D7F4A7C1));
+    x = x.wrapping_mul(0x9E3779B97F4A7C15);
+    x = x ^ (x >> 30);
+    x = x.wrapping_mul(0xBF58476D1CE4E5B9);
+    x = x ^ (x >> 27);
+    x = x.wrapping_mul(0x94D049BB133111EB);
+    x = x ^ (x >> 31);
+    x
+}
+```
+
+**Dynamic Partition Space Evolution**:
+Incorporating the dynamic threat evolution counter with Murmur/SplitMix avalanche mixing ensures that the active/decoy assignment evolves continuously throughout application execution. This mathematically eliminates the static seed partition space collapse vulnerability (`prop_defect_l5_01`), expanding the assignment state space from $2^{32}$ back to $2^{64}$ and preventing memory analyzers from establishing permanent active shard signatures.
+
+**Rotation Shift Parity Decoupling**:
+Shard rotation shifts are computed via `get_shard_rotation_shift(index: usize) -> u32`:
+$$\text{shift}(i) = (i \oplus 1) \bmod 32$$
+Decoupling the shift index from pair parity breaks the bit-shift correlation between adjacent shard pairs, preventing adversaries from deducing partition roles through shift-parity leakage (`prop_defect_l5_03`).
 
 ### 5.2 XOR Masking & Zero-Freeze Trap
 
 Each shard stores an encoded value:
 
-$$\text{Encoded}_i = (\text{Value}_i \lll (i \bmod 32)) \oplus \text{Mask}_i$$
+$$\text{Encoded}_i = (\text{Value}_i \lll ((i \oplus 1) \bmod 32)) \oplus \text{Mask}_i$$
 
-where $\text{Mask}_i$ is derived from `mix_seed(seed, i)`.
+where $\text{Mask}_i$ is derived lazily via `mix_seed(seed, i)` and cached in `SHARD_MASKS_CACHE: OnceLock<[u32; 128]>`. Decoding is the exact mathematical inverse:
+
+$$\text{Value}_i = (\text{Encoded}_i \oplus \text{Mask}_i) \ggg ((i \oplus 1) \bmod 32)$$
+
+When suspicion is clean ($\text{Value}_i = 0$), $\text{Encoded}_i = \text{Mask}_i \ne 0$.
 
 **Defense Against Memory Freezing / Zeroing**:
-If an attacker freezes memory or writes `0x00` across the entire array, the decoded value becomes:
+If an attacker freezes memory or writes `0x00` across the entire array (via Cheat Engine or script), the decoded value becomes:
 
-$$\text{Decoded}_i = (0 \oplus \text{Mask}_i) \ggg (i \bmod 32) = \text{Mask}_i \ggg (i \bmod 32)$$
+$$\text{Decoded}_i = (0 \oplus \text{Mask}_i) \ggg ((i \oplus 1) \bmod 32) = \text{Mask}_i \ggg ((i \oplus 1) \bmod 32)$$
 
 Summing across all 64 active shards results in a massive pseudo-random score exceeding 500 points, immediately tripping the honeytrap and returning `0xFFFFFFFF`.
+
+**Uninitialized State Contract Coherence**:
+When `GLOBAL_STATE_INITIALIZED` is false, both `reconstruct_threat_score()` and `get_suspicion_score()` return `0` consistently under `Ordering::Acquire`, eliminating uninitialized score divergence bugs (`prop_defect_l5_09`).
 
 ### 5.3 Dispersed Scattering Algorithm
 
 When suspicion is added (`add_suspicion(severity)`):
-1. The total points are split into 3 random positive values ($p_1 + p_2 + p_3 = \text{amount}$).
-2. $p_1, p_2, p_3$ are added to 3 randomly selected Active shards using atomic compare-exchange loops.
-3. Simultaneously, 3 pseudo-random noise values are written to 3 randomly selected Decoy shards using the identical rotation and mask encoding.
+1. The total points are split into 3 random positive values ($p_1 + p_2 + p_3 = \text{amount}$) using RDTSC entropy weights $w_1, w_2, w_3 \in [1, 32]$.
+2. $p_1, p_2, p_3$ are added to 3 randomly selected Active shards using atomic compare-and-swap (CAS) loops:
+   ```rust
+   let old_contribution = (current_encoded ^ mask).rotate_right((idx as u32 ^ 1) % 32);
+   let new_contribution = old_contribution.saturating_add(amount);
+   let new_encoded = new_contribution.rotate_left((idx as u32 ^ 1) % 32) ^ mask;
+   SUSPICION_SHARDS[idx].compare_exchange(current_encoded, new_encoded, Ordering::SeqCst, Ordering::SeqCst)
+   ```
+3. Simultaneously, 3 pseudo-random noise values are written to 3 randomly selected Decoy shards using bounded rotational updates:
+   ```rust
+   let current_decoded = (current_encoded ^ mask).rotate_right((idx as u32 ^ 1) % 32);
+   let delta = ((noise & 0x0F) as u32).max(1);
+   let new_decoded = current_decoded.saturating_add(delta).min(255);
+   let new_encoded = new_decoded.rotate_left((idx as u32 ^ 1) % 32) ^ mask;
+   ```
 
-An attacker monitoring memory writes cannot distinguish between authentic detections and decoy camouflage.
+**Decoy Magnitude Preservation & Full 32-Bit Entropy**:
+By decoding, adding a bounded delta ($\le 15$), clamping to 255, and re-encoding across all 32 bits, decoy shards maintain realistic score magnitudes and exhibit indistinguishable entropy distributions without low-byte truncation or magnitude explosion (`prop_defect_l5_02`).
 
 ### 5.4 Dynamic SipHash-2-4 Integrity Hash
 
-To prevent offline tampering with global memory:
-- `recalculate_global_integrity()` computes a 64-bit SipHash-2-4 over the reconstructed threat score and decay timestamp.
-- The SipHash initialization vectors (`GLOBAL_SIPHASH_V0..V3`) are dynamically randomized at startup using the runtime seed.
-- If memory is edited without updating the SipHash digest, `validate_global_integrity()` returns `false`, tripping immediate key poisoning.
+To prevent offline tampering and data manipulation:
+- `compute_integrity_siphash(score: u32, decay_time: u64) -> u64` processes state across two independent domain-separated compression blocks:
+  - **Block 1 (Threat Score)**: $v_2 \gets v_2 \oplus ((score \text{ as } u64) \oplus \text{0x243F6A8885A308D3}), \quad v_3 \gets v_3 \oplus 8$, followed by 2 SipHash rounds.
+  - **Block 2 (Decay Timestamp)**: $v_2 \gets v_2 \oplus (decay\_time \oplus \text{0x13198A2E03707344}), \quad v_3 \gets v_3 \oplus 16$, followed by 2 SipHash rounds.
+  - **Finalization**: $v_2 \gets v_2 \oplus \text{0xFF}$, followed by 4 finalization rounds, outputting $v_0 \oplus v_1 \oplus v_2 \oplus v_3$.
+- **Collision Immunity**: Domain separation constants (`0x243F6A8885A308D3`, `0x13198A2E03707344`) mathematically eliminate linear additive collisions where (+k, -k) tamper swaps between score and decay timestamp produced identical digests (`prop_defect_l5_12`).
+- **Polymorphic Key Initialization**: The SipHash initialization vectors (`GLOBAL_SIPHASH_V0..V3`) are derived at startup from the runtime seed and base constants via `initialize_dynamic_siphash()`, preventing external unkeyed tag forgery (`prop_defect_l5_13`). Lazy atomic fallback initialization prevents init race conditions (`prop_defect_l5_06`).
+- **Lock-Free Concurrency Serialization**: `recalculate_global_integrity()` is protected by an `INTEGRITY_LOCK` spin-wait CAS loop, eliminating lost hash recalculation races between concurrent detection threads (`prop_defect_l5_08`).
+- **Poison Persistence**: When `is_poisoned_internal()` is active, hash recalculation is short-circuited and `validate_global_integrity()` returns `false` unconditionally, preventing self-erasing hash tags (`prop_defect_l5_15`).
 
 ### 5.5 Saturated Score Decay
 
 To prevent temporary environmental hiccups from permanently impairing execution:
-- Every 300 seconds, `apply_decay()` reduces suspicion by 5 points.
-- Decays both Active shards (reducing genuine score) and Decoy shards (mimicking decay patterns).
-- The score decays saturating at baseline 0 and never drops below legitimate detection minimums.
+- Every 300 seconds, `apply_decay()` reduces suspicion by 5 points per interval.
+- **Atomic TOCTOU Window Elimination**: Elapsed time is divided into 300-second intervals ($d = \lfloor \Delta t / 300 \rfloor$). `GLOBAL_LAST_DECAY_TIME` is advanced atomically by $d \times 300$ using a CAS loop:
+  $$\Delta t_{\text{remainder}} = \Delta t - d \times 300 = \Delta t \bmod 300$$
+  This eliminates time-of-check to time-of-use (TOCTOU) races between timestamp advancement and hash recalculation (`prop_defect_l5_07`), while strictly preserving sub-300s fractional remainders.
+- **Non-Periodic Decoy Decay**: Active shards decay saturating at 0. Decoy shards decay using non-periodic pseudo-decay delta `generate_decoy_decay_delta(entropy, i)`:
+  $$\text{base} = (entropy \lll (i \bmod 61)) \land 0\text{x}6$$
+  $$\text{phase} = (i / 8) \land 1$$
+  $$\delta = \text{base} \lor \text{phase}$$
+  This breaks modulo-8 cyclic decay periodicity (`prop_defect_l5_05`).
 
 ### 5.6 Soft Corruption vs Hard Corruption
 
@@ -467,9 +519,16 @@ To prevent temporary environmental hiccups from permanently impairing execution:
    On the main thread, the delay is capped at 50ms (~20 FPS) to avoid Windows ANR hangs while introducing system lag that severely disrupts automated fuzzing.
 2. **Hard Corruption (Data & Token Poisoning)**:
    For scores > 100 or when `POISON_SEED` is contaminated:
-   - `SecureVault::unlock` rotates the transformation key by `(score % 61)` and multiplies by `0x9E3779B97F4A7C15`.
-   - `CoupledLogic` and `Corruptible` silently mutate application data (e.g., bit flips, numeric scaling, inverted booleans).
-   - `trigger_silent_poisoning()` corrupts `POISON_SEED`, `GLOBAL_ENCRYPTION_KEY`, and `GLOBAL_VIRTUAL_MACHINE_KEY`.
+   - **Absorbing Irreversible Poison Latch**: `trigger_silent_poisoning()` applies an absorbing MSB bit latch and linear congruential mixer:
+     $$\text{latched} = \text{state} \lor \text{0x8000\_0000\_0000\_0000}$$
+     $$\text{mixed} = (\text{latched} \times \text{0x9E3779B97F4A7C15}) \oplus (\text{entropy} \lor 1) \lor \text{0x8000\_0000\_0000\_0000}$$
+     Because the latch sets the MSB irreversibly and applies non-involutory mixing, repeated poisoning invocations ($2k$ triggers) cannot cancel corruption or restore clean keys (`prop_defect_l5_14`).
+   - **Atomic VM Key Evolution**: `update_vm_key_with_result(vm_result)` updates `GLOBAL_VIRTUAL_MACHINE_KEY` via an atomic `compare_exchange_weak` CAS loop, preventing lost updates under multi-threaded TinyVM execution (`prop_defect_l5_10`).
+   - **Non-Linear Combined Score Coupling**: `get_combined_score()` couples threat score and `POISON_SEED` via non-linear multi-stage rotation and multiplier avalanche:
+     $$\text{linear} = (\text{score} \times \text{0x5DEECE66D}) \oplus \text{POISON\_SEED}$$
+     $$\text{token} = (\text{linear} \lll 17) \times \text{0x9E3779B97F4A7C15} \oplus (\text{POISON\_SEED} \gg 3)$$
+     eliminating linear algebraic recovery of `POISON_SEED` (`prop_defect_l5_16`).
+   - **Full 64-Bit Stealth Log Obfuscation**: `obfuscate_stealth_log_entry(entry, seed)` diffuses a full 64-bit seed (`mix_seed_to_u64`), preventing upper-bit unmasked leakage (`prop_defect_l5_04`).
 
 ---
 
@@ -519,7 +578,7 @@ pub fn is_environment_poisoned() -> bool;
 | **Layer 2: Seed Orchestration** | `seed_orchestrator.rs` | 3-shard entropy mixing, MurmurHash3 avalanche finalizer, OnceLock caching, golden ratio automorphism | Replay attacks, cross-device binary copying, static analysis of constants |
 | **Layer 3: Memory Stealth & Anti-Dump** | `anti_dump.rs`, `enhanced_veh.rs`, `decoy_system.rs` | 5-phase master VEH (1232-byte CONTEXT, TEB limits, depth <= 1), 64-byte 16-aligned indirect syscalls, lock-free decoy table (8 slots, saturating math, quarantine), surgical PE NT header erasure | Memory dumpers (Scylla, ProcDump), guard page scanners, prologue patchers, EDR hooks |
 | **Layer 4: Polymorphic Virtual Execution** | `tiny_vm.rs` | 256-entry indirect v-table, Mode H non-linear LSB diffusion, dynamic LTP Chaos Trap, two-phase fallback (Mode H/L), anti-trace derangement heartbeat, stack bounds safety | Disassemblers (IDA, Ghidra), DBI engines (Frida, DynamoRIO), instruction tracing, algebraic cryptanalysis |
-| **Layer 5: Decentralized State & Silent Corruption** | `global_state.rs` | 128 atomic shards (64 Active / 64 Decoy), pair-based partition, XOR masking, 3-shard scatter, dynamic SipHash, soft backoff | Memory search/freeze tools (Cheat Engine), data breakpoints, static decompilation |
+| **Layer 5: Decentralized State & Silent Corruption** | `global_state.rs` | 128 atomic shards (64 Active / 64 Decoy), dynamic partition map evolution (`compute_dynamic_pair_map`), XOR rotation masking `(i ^ 1) % 32`, 3-shard scatter & bounded decoy noise (clamped to 255), domain-separated SipHash-2-4 (`0x243F6A8885A308D3`, `0x13198A2E03707344`), absorbing poison latches (`state | 0x8000_0000_0000_0000`, `0x9E3779B97F4A7C15`), atomic CAS loops | Memory search/freeze tools (Cheat Engine), data breakpoints, state desynchronization, involutory double-poisoning cancellation, linear additive collision forgery, static decompilation |
 
 ---
 

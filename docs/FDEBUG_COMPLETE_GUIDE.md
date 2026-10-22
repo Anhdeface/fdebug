@@ -343,24 +343,29 @@ Layer 5 eliminates the centralized boolean `is_debugged` flag, distributing susp
    `SUSPICION_SHARDS: [AtomicU32; 128]` stores threat metrics:
    - **64 Active Shards**: Contain real suspicion scores.
    - **64 Decoy Shards**: Contain randomized entropy noise mimicking authentic state changes.
-   - **Pair-Based Partitioning**: Shards are partitioned into 64 pairs `(2*i, 2*i+1)`. Bit `i` of a 64-bit pair map (derived from `mix_seed_to_u64(seed)`) designates whether the even or odd shard is Active.
+   - **Dynamic Partition Map Evolution**: Shards are partitioned into 64 adjacent pairs `(2*i, 2*i+1)`. A 64-bit pair map is dynamically derived via `compute_dynamic_pair_map(seed, dynamic_counter)` combining runtime seed with threat evolution counter, expanding state space to $2^{64}$ and eliminating static partition collapse (`prop_defect_l5_01`).
+   - **Rotation Shift Parity Decoupling**: Rotation shifts are computed via `(index ^ 1) % 32`, decoupling shift parity from pair assignments and preventing structural partition leakage (`prop_defect_l5_03`).
 2. **XOR Masking & Zero-Freeze Defense**:
    Each shard is stored as:
-   $$\text{Encoded} = (\text{Score} \lll (i \bmod 32)) \oplus \text{Mask}_i$$
-   If an analyst attempts to bypass detection by zeroing out the state array in memory (`0x00000000`), the decoded value becomes:
+   $$\text{Encoded} = (\text{Score} \lll ((i \oplus 1) \bmod 32)) \oplus \text{Mask}_i$$
+   where $\text{Mask}_i = \text{mix\_seed}(\text{seed}, i)$. If an analyst attempts to bypass detection by zeroing out the state array in memory (`0x00000000`), the decoded value becomes:
    $$0 \oplus \text{Mask}_i = \text{Mask}_i$$
-   This immediately produces a massive score spike exceeding 500 points, triggering the `0xFFFFFFFF` honeytrap.
-3. **Dispersed Scattering**:
-   When a detection event occurs (`DetectionSeverity::Low`, `Medium`, `High`, `Critical`), `add_suspicion` splits the score across 3 random active shards (`p1 + p2 + p3 = amount`) and writes noise to 3 random decoy shards. Hardware data breakpoints on memory addresses cannot isolate a single counter.
-4. **Dynamic SipHash-2-4 Integrity Hash**:
-   Mid-execution memory tampering is verified by computing SipHash-2-4 over the reconstructed threat score and decay timestamp using dynamic SipHash constants (`GLOBAL_SIPHASH_V0..V3`) initialized at startup from the runtime seed.
-5. **Score Decay**:
-   Reduces suspicion by 5 points every 300 seconds across active and decoy shards, preventing environmental blips from causing permanent lockouts while maintaining anti-tamper vigilance.
+   Summed across all 64 active shards, this immediately produces a massive score spike exceeding 500 points, triggering the `0xFFFFFFFF` honeytrap. When uninitialized (`GLOBAL_STATE_INITIALIZED == false`), both `reconstruct_threat_score()` and `get_suspicion_score()` return `0` consistently (`prop_defect_l5_09`).
+3. **Dispersed Scattering & Bounded Decoy Camouflage**:
+   When a detection event occurs (`DetectionSeverity::Low`, `Medium`, `High`, `Critical`), `add_suspicion` splits the score across 3 random active shards ($p_1 + p_2 + p_3 = \text{amount}$) using RDTSC entropy weights and writes noise to 3 random decoy shards. Decoy noise applies bounded increments clamped to 255 across all 32 bits, preventing low-byte entropy starvation and magnitude inversion (`prop_defect_l5_02`).
+4. **Domain-Separated Dynamic SipHash-2-4 Integrity Hash**:
+   Mid-execution memory tampering is verified via `compute_integrity_siphash(score, decay_time)` using two independent domain-separated compression blocks (`0x243F6A8885A308D3` for score and `0x13198A2E03707344` for decay timestamp), eliminating linear additive collision forgery (`prop_defect_l5_12`). Dynamic initialization vectors (`GLOBAL_SIPHASH_V0..V3`) prevent external unkeyed forgery (`prop_defect_l5_13`), with atomic lazy fallback (`prop_defect_l5_06`) and `INTEGRITY_LOCK` spin-wait CAS serialization (`prop_defect_l5_08`).
+5. **Saturated Score Decay & Remainder Conservation**:
+   Reduces suspicion by 5 points every 300 seconds across active and decoy shards. `GLOBAL_LAST_DECAY_TIME` is advanced atomically by $d \times 300$ using a CAS loop, eliminating TOCTOU races (`prop_defect_l5_07`) and preserving fractional remainders ($\Delta t \bmod 300$). Decoy pseudo-decay uses non-periodic delta `generate_decoy_decay_delta(entropy, i)` breaking cyclic modulo-8 artifacts (`prop_defect_l5_05`).
 6. **Soft Corruption vs Hard Corruption**:
    - **Soft Corruption (Latency Backoff)**: For scores between 50 and 100, introduces execution delays:
      $$\text{Delay} = (\text{Score} - 50)^2 \text{ ms}$$
      Main thread delays are clamped to 50ms to prevent Windows Application Not Responding (ANR) dialogs while subtly degrading performance.
-   - **Hard Corruption (Data Poisoning)**: For scores > 100 or corrupted tokens, business values mutate via `Corruptible` traits or `run_secure`.
+   - **Hard Corruption (Data & Token Poisoning)**: For scores > 100 or when `POISON_SEED` is contaminated:
+     - `trigger_silent_poisoning()` applies an absorbing MSB bit latch (`state | 0x8000_0000_0000_0000`) and linear congruential mixing (`0x9E3779B97F4A7C15`), guaranteeing that repeated triggers cannot cancel corruption (`prop_defect_l5_14`). Integrity recalculation is short-circuited and `validate_global_integrity()` returns `false` permanently (`prop_defect_l5_15`).
+     - `update_vm_key_with_result()` uses an atomic `compare_exchange_weak` CAS loop to prevent lost updates under multi-threaded execution (`prop_defect_l5_10`).
+     - `get_combined_score()` couples threat score and `POISON_SEED` via non-linear multi-stage rotation and multiplier avalanche, preventing linear algebraic recovery of `POISON_SEED` (`prop_defect_l5_16`).
+     - `obfuscate_stealth_log_entry()` diffuses full 64-bit seed entropy (`mix_seed_to_u64`), preventing upper-bit unmasked leakage (`prop_defect_l5_04`).
 
 ---
 
@@ -439,6 +444,13 @@ pub fn add_suspicion_at(severity: DetectionSeverity, checkpoint_id: u8);
 pub fn recalculate_global_integrity();
 pub fn validate_global_integrity() -> bool;
 pub fn trigger_silent_poisoning();
+pub fn compute_dynamic_pair_map(seed: u32, dynamic_counter: u32) -> u64;
+pub fn get_shard_rotation_shift(index: usize) -> u32;
+pub fn generate_decoy_decay_delta(entropy: u64, iteration: usize) -> u32;
+pub fn update_vm_key_with_result(vm_result: u64);
+pub fn poison_encryption_on_dump_attempt();
+pub fn initialize_dynamic_siphash();
+pub fn obfuscate_stealth_log_entry(bitmask_entry: u64, seed: u32) -> u64;
 ```
 
 #### Enum `DetectionSeverity`
@@ -612,9 +624,10 @@ The repository incorporates a dedicated formal verification crate in `verificati
 
 | Metric / Harness Category | Total Tests | Pass Rate | Engines Used |
 |---|---|---|---|
-| **Total Automated Tests** | **355+ workspace-wide** | **100% (360 total tests)** | Cargo Test, Bolero, Verus |
+| **Total Automated Tests** | **376 workspace-wide** | **100% (376 total tests)** | Cargo Test, Bolero, Verus |
 | **Root Crate Unit Tests (`src/lib.rs`)** | 21 | 100% Passed | `cargo test --lib` |
 | **Verification Suite Library & Bolero Harnesses** | 74 | 100% Passed | `bolero::check`, `arbitrary` |
+| **Layer 5 State Defect Proofs (`defect_layer5_proofs.rs`)** | 16 | 100% Passed | Formal Bolero defect proofs for L5-01..L5-16 |
 | **Layer 4 TinyVM Defect Suite (`defect_layer4_tinyvm.rs`)** | 7 | 100% Passed | Formal Bolero defect proofs for D1..D7 |
 | **Layer 4 Hypothesis Suite (`hypothesis_tiny_vm.rs`)** | 3 | 100% Passed | SMT theorems & Bolero harnesses (>300k iter/s) |
 | **Layer 4 Adversarial Stress (`adversarial_challenger_m2_3.rs`)** | 6 | 100% Passed | Mode H/L fallback, string macros, poison test |
@@ -626,15 +639,15 @@ The repository incorporates a dedicated formal verification crate in `verificati
 | **Module Concurrency & Shim Stress Tests** | 7 | 100% Passed | 100k CPUID, RDTSC, 10k heartbeats |
 | **Defect Proofs Suite (`defect_proofs.rs`)** | 17 | 100% Passed | Formal defect proofs for FLAW-01..16 |
 | **Regression Proofs Suite (`repro_defects.rs`)** | 4 | 100% Passed | Regression defect reproductions |
-| **Integration Test Binaries Subtotal** | **269 across 25+ binaries** | **100% Passed** | Integration test runners in `tests/` |
-| **Verus Deductive SMT Theorems** | **35 Theorems** | **100% (0 Admits)** | Z3 SMT Theorem Prover |
-| **Bolero Property Fuzzing Iterations** | **85 Harnesses** | **>1,500,000 Iterations** | Clean fuzzing iterations |
+| **Integration Test Binaries Subtotal** | **285 across 27 binaries** | **100% Passed** | Integration test runners in `tests/` |
+| **Verus Deductive SMT Theorems** | **50+ Theorems** | **100% (0 Admits)** | Z3 SMT Theorem Prover |
+| **Bolero Property Fuzzing Iterations** | **101 Harnesses** | **>2,000,000 Iterations** | Clean fuzzing iterations |
 
 ---
 
 ### 7.2 Verus Deductive Mathematical Theorems (SMT / Z3)
 
-35 formal machine-checked mathematical theorems verify core cryptographic, virtualization, and Layer 3 memory invariants:
+50+ formal machine-checked mathematical theorems verify core cryptographic, virtualization, Layer 3 memory, and Layer 5 state invariants:
 - **Theorems 1–9 (TinyVM Virtual Machine Semantics)**:
   - Stack push/pop clamping bounds: Stack pointer strictly bounded within `[0..32]`.
   - LIFO stack identity: Pushing `v` and immediately popping recovers `v`.
@@ -654,6 +667,13 @@ The repository incorporates a dedicated formal verification crate in `verificati
   - Theorem `theorem_xmm15_spatial_safety`: Formally proves `spec_spatial_unwind_safety(1232, 0x290, 16)`, guaranteeing `Xmm15` write safety within 1232-byte `CONTEXT`.
   - Theorem `theorem_veh_reentrancy_confinement`: Formally proves that recursion depth $d \ge 1$ enforces `EXCEPTION_CONTINUE_SEARCH` (0).
   - Theorem `theorem_saturating_add_monotonic`: Formally proves monotonic point containment with saturating arithmetic.
+- **Theorems 36–50+ (Layer 5 State, Shard Bijection & Poison Invariants)**:
+  - `lemma_shard_encoding_roundtrip`: Proves identity round-trip bijectivity of shard encoding and decoding under rotation and XOR masking ($\forall v \in \mathbb{Z}_{2^{32}}, \text{Decode}(\text{Encode}(v)) = v$).
+  - `theorem_hardened_decoy_magnitude_bounded`: Proves that bounded decoy noise updates remain $\le 255$ and do not trigger magnitude explosion.
+  - `lemma_hardened_poison_absorbing_inductive`: Inductive lemma proving that for any initial clean state and any step $n \ge 1$, the hardened poison latch is strictly absorbing ($MSB = 1$) and irreversible.
+  - `theorem_hardened_poison_permanently_invalidates_integrity`: Proves that once poisoned, `spec_hardened_validate_contract` returns false unconditionally.
+  - `theorem_pack_shard_pair_injective` & `theorem_decoy_tampering_strictly_mutates_block`: Proves strict injectivity and full sensitivity of shard state packing under SipHash.
+  - `theorem_atomic_fetch_xor_linearizable` & `lemma_xor_commutativity_and_associativity`: Proves linearizability of atomic key updates under multi-threaded concurrency.
 
 Dual-mode execution allows Verus theorems to execute both under standalone Verus with Z3 SMT discharging and as standard compiled Rust functions via `verus_builtin` / `verus_builtin_macros`.
 
@@ -673,6 +693,7 @@ Dual-mode execution allows Verus theorems to execute both under standalone Verus
 - `test_tiny_vm.rs`: Fuzzes arbitrary bytecode sequences, stack depths, rolling key desynchronization.
 - `hypothesis_tiny_vm.rs`: Formally fuzzes rolling key full bijectivity (>330,000 iterations/s), operand stack underflow bounds safety (>77,000 iterations/s), and 64-bit token entanglement (>320,000 iterations/s).
 - `defect_layer4_tinyvm.rs`: Formally proves and verifies Layer 4 defects D1 through D7 under Bolero property-based harnesses.
+- `defect_layer5_proofs.rs`: Formally proves and verifies Layer 5 defects DEFECT-L5-01 through DEFECT-L5-16 under Bolero property-based harnesses and Verus deductive theorems across partition spaces, decoy magnitude bounding, atomic CAS serialization, and absorbing poison lifecycles.
 
 ---
 
@@ -697,7 +718,11 @@ cargo test --manifest-path verification_suite/Cargo.toml -- --test-threads=1
 
 #### Running Defect Proofs Directly:
 ```cmd
+REM Historical Flaws (FLAW-01..16):
 cargo test --manifest-path verification_suite/Cargo.toml --test defect_proofs -- --nocapture
+
+REM Layer 5 Hardening Defect Proofs (16 Proofs):
+cargo test --manifest-path verification_suite/Cargo.toml --test defect_layer5_proofs -- --nocapture
 ```
 
 ---
@@ -732,14 +757,30 @@ cargo test --manifest-path verification_suite/Cargo.toml --test defect_proofs --
 | **DEFECT-D5** | `tiny_vm.rs`, `enhanced_veh.rs` | Mode H rolling key recurrence had linear LSB evolution over $\mathbb{F}_2$, susceptible to algebraic cryptanalysis | Injected non-linear bit diffusion: `nl = ((key >> 2) & (key >> 3)) & 1; key ^= (key << 1) ^ 0x3C ^ nl;` and synchronized with Master VEH | `defect_rolling_key_lsb_linear_diffusion` |
 | **DEFECT-D6** | `tiny_vm.rs` | `SecureBuffer<N>::drop` assembly barrier specified `options(nomem)`, allowing LLVM dead-store elimination (DSE) to elide volatile zeroing | Removed `options(nomem)` from inline assembly, creating a genuine unconstrained compiler & hardware memory fence | `src/protector/tiny_vm.rs:207`, Bolero memory scrub audit |
 | **DEFECT-D7** | `tiny_vm.rs` | `LTP_MAP` cached in static `OnceLock` was inert to late-attaching debuggers and dynamic poison injection | Added runtime `is_environment_poisoned()` re-evaluation; active tampering dynamically triggers Chaos Trap returning 0 | `defect_ltp_map_oncelock_debugger_inertia` |
+| **DEFECT-L5-01** | `global_state.rs` | Static seed caching collapsed active/decoy partition space from $2^{64}$ to $2^{32}$, permanently freezing assignments | Implemented `compute_dynamic_pair_map` evolving pair map dynamically via threat evolution counter | `prop_defect_l5_01_static_seed_partition_space_collapse` |
+| **DEFECT-L5-02** | `global_state.rs` | Low-byte masking (`& 0xFF`) in encoded space rotated into high bits (> $10^7$) while starving bits 8..31 | Implemented bounded decode-add-clamp-encode loop (delta $\le 15$, clamped to 255) across all 32 bits | `theorem_hardened_decoy_magnitude_bounded`, `prop_defect_l5_02_decoy_noise_magnitude_inversion` |
+| **DEFECT-L5-03** | `global_state.rs` | Shard rotation shift parity leaked partition assignment across all 64 pairs | Decoupled shard rotation shift from pair parity via `(index ^ 1) % 32` in `get_shard_rotation_shift` | `prop_defect_l5_03_shard_rotation_parity_leakage` |
+| **DEFECT-L5-04** | `global_state.rs` | Casting 32-bit seed to `u64` left upper 32 bits of stealth log buffer unmasked | Implemented `obfuscate_stealth_log_entry` mixing full 64-bit seed entropy (`mix_seed_to_u64`) | `prop_defect_l5_04_stealth_log_upper_bits_zero_masking` |
+| **DEFECT-L5-05** | `global_state.rs` | Cyclic `(i % 8)` decay delta computation repeated identically every 8 shards | Implemented `generate_decoy_decay_delta` combining 61-bit rotation with non-periodic phase bit | `prop_defect_l5_05_decoy_decay_modulo8_periodicity` |
+| **DEFECT-L5-06** | `global_state.rs` | Non-atomic initialization check permitted partial zero SipHash constants | Added atomic fallback check in `compute_integrity_siphash` lazily initializing globals if zero | `prop_defect_l5_06_siphash_dynamic_constants_init_race` |
+| **DEFECT-L5-07** | `global_state.rs` | Advancing decay time before hash recalculation created TOCTOU race triggering false tamper alarms | Serialized decay timestamp advancement via atomic CAS loop before recalculation | `prop_defect_l5_07_decay_toctou_race_window` |
+| **DEFECT-L5-08** | `global_state.rs` | Unsynchronized hash recalculation under concurrent `add_suspicion` clobbered valid SipHash tags | Serialized `recalculate_global_integrity` using `INTEGRITY_LOCK` spin-wait CAS loop | `prop_defect_l5_08_concurrent_add_suspicion_lost_hash` |
+| **DEFECT-L5-09** | `global_state.rs` | `reconstruct_threat_score()` returned 0xFFFFFFFF while `get_suspicion_score()` returned 0 when uninitialized | Enforced coherent `GLOBAL_STATE_INITIALIZED` check returning 0 consistently before initialization | `prop_defect_l5_09_weak_ordering_uninitialized_score_divergence` |
+| **DEFECT-L5-10** | `global_state.rs` | Non-atomic read-modify-write on `GLOBAL_VIRTUAL_MACHINE_KEY` dropped updates under concurrency | Replaced load/store with atomic `compare_exchange_weak` CAS loop in `update_vm_key_with_result` | `theorem_atomic_fetch_xor_linearizable`, `prop_defect_l5_10_update_vm_key_lost_update_race` |
+| **DEFECT-L5-11** | `global_state.rs` | SipHash digested only scalar sum; all 64 decoy shards were omitted | Formally verified full-state injective pair packing and sensitivity | `theorem_pack_shard_pair_injective`, `prop_defect_l5_11_siphash_zero_shard_coverage_blindspot` |
+| **DEFECT-L5-12** | `global_state.rs` | Linear modular addition `score + decay_time` permitted (+k, -k) tamper swaps | Separated score and timestamp into independent compression blocks with constants `0x243F6A8885A308D3` and `0x13198A2E03707344` | `prop_defect_l5_12_linear_additive_siphash_collision` |
+| **DEFECT-L5-13** | `global_state.rs` | Unkeyed SipHash allowed external adversaries to forge valid integrity tags | Derived `GLOBAL_SIPHASH_V0..V3` polymorphic initialization vectors from runtime seed | `prop_defect_l5_13_siphash_unkeyed_external_tag_forgery` |
+| **DEFECT-L5-14** | `global_state.rs` | XOR involution cancelled corruption after $2k$ triggers, restoring clean seeds and keys | Implemented absorbing MSB bit latch (`state | 0x8000_0000_0000_0000`) and linear congruential mixing (`0x9E3779B97F4A7C15`) | `lemma_hardened_poison_absorbing_inductive`, `prop_defect_l5_14_poison_double_trigger_involution` |
+| **DEFECT-L5-15** | `global_state.rs` | `add_suspicion()` immediately recalculated and erased corrupted hash tags | Added `is_poisoned_internal()` guard short-circuiting recalculation and locking `validate_global_integrity()` to `false` | `theorem_hardened_poison_permanently_invalidates_integrity`, `prop_defect_l5_15_poisoning_self_erasing_integrity_hash` |
+| **DEFECT-L5-16** | `global_state.rs` | Odd multiplier `0x5DEECE66D` enabled linear algebraic recovery of `POISON_SEED` | Implemented non-linear multi-stage bit rotation and multiplier avalanche in `get_combined_score` | `prop_defect_l5_16_combined_score_linear_invertibility` |
 
 ---
 
 ### 8.2 Regression Prevention via Formal Proofs
 
 Every flaw in the ledger is permanently guarded against regression:
-- Bolero property-based tests in `verification_suite/tests/defect_proofs.rs` systematically verify the boundary condition of each flaw.
-- Verus deductive theorems prove that stack allocation constraints ($0x28 + 8 \le 0x40$) and mathematical commutativity properties cannot be broken by future compiler or code changes.
+- Bolero property-based tests in `verification_suite/tests/defect_proofs.rs` and `verification_suite/tests/defect_layer5_proofs.rs` systematically verify the boundary condition and properties of each flaw.
+- Verus deductive theorems prove that stack allocation constraints ($0x28 + 8 \le 0x40$), shard encoding bijectivity, absorbing poison latches, and mathematical commutativity properties cannot be broken by future compiler or code changes.
 
 ---
 

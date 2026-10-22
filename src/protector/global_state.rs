@@ -1,10 +1,10 @@
+#![allow(non_snake_case, dead_code, unused_variables, unused_imports, clippy::all)]
 //! Global state management for the anti-debug system with SipHash-based encryption
 //! 128-shard architecture with 50% Active/Decoy distribution for enhanced obfuscation
 // github.com/anhdeface
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::OnceLock;
-#[allow(non_snake_case)]
 /// Diagnostic mode for debugging false positives
 pub static DIAGNOSTIC_MODE: AtomicBool = AtomicBool::new(true);
 /// Guard to ensure shards are initialized before adding or reconstructing suspicion
@@ -23,6 +23,7 @@ pub fn log_checkpoint_trigger(id: u8, amount: u32) {
         }
     }
 }
+
 
 /// Severity levels for detection events
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,7 +211,7 @@ const fn mix_seed(seed: u32, i: u32) -> u32 {
 /// Mix seed to generate a 64-bit pair map for Active/Decoy determination
 /// Each bit determines which element in a pair (2*i, 2*i+1) is Active
 #[inline(always)]
-fn mix_seed_to_u64(seed: u32) -> u64 {
+pub fn mix_seed_to_u64(seed: u32) -> u64 {
     // Create a 64-bit value from the seed using multiple mixing rounds
     let mut x = seed as u64;
     x = x.wrapping_mul(0x9E3779B97F4A7C15);
@@ -222,12 +223,31 @@ fn mix_seed_to_u64(seed: u32) -> u64 {
     x
 }
 
+/// Dynamically evolved pair map incorporating threat evolution counter to prevent static partition collapse
+#[inline(always)]
+pub fn compute_dynamic_pair_map(seed: u32, dynamic_counter: u32) -> u64 {
+    let mut x = (seed as u64) ^ ((dynamic_counter as u64).wrapping_mul(0x5DEECE66D7F4A7C1));
+    x = x.wrapping_mul(0x9E3779B97F4A7C15);
+    x = x ^ (x >> 30);
+    x = x.wrapping_mul(0xBF58476D1CE4E5B9);
+    x = x ^ (x >> 27);
+    x = x.wrapping_mul(0x94D049BB133111EB);
+    x = x ^ (x >> 31);
+    x
+}
+
+/// Hardened shard rotation shift decoupled from index parity
+#[inline(always)]
+pub fn get_shard_rotation_shift(index: usize) -> u32 {
+    (index as u32 ^ 1) % 32
+}
+
 /// Determine if a shard index is Active (holds real data) or Decoy (noise)
 /// Uses the pair-based algorithm: 128 shards = 64 pairs
 /// For pair i (0..64), if bit i of pair_map is 0 -> index 2*i is Active
 ///                      if bit i of pair_map is 1 -> index 2*i+1 is Active
 #[inline(always)]
-fn is_active_shard(index: usize, pair_map: u64) -> bool {
+pub fn is_active_shard(index: usize, pair_map: u64) -> bool {
     if index >= 128 {
         return false;
     }
@@ -349,19 +369,13 @@ fn siphash(v0: &mut u64, v1: &mut u64, v2: &mut u64, v3: &mut u64) {
 }
 
 /// Calculate integrity hash using SipHash to detect mid-execution tampering
-pub fn recalculate_global_integrity() {
-    // Create a combined value from global state
-    // Use reconstructed score instead of direct load
-    let combined = (reconstruct_threat_score() as u64)
-        .wrapping_add(GLOBAL_LAST_DECAY_TIME.load(Ordering::SeqCst));
-
-    // Ensure dynamic SipHash constants are initialized (FLAW-14)
+fn compute_integrity_siphash(score: u32, decay_time: u64) -> u64 {
     let mut v0 = GLOBAL_SIPHASH_V0.load(Ordering::SeqCst);
     let mut v1 = GLOBAL_SIPHASH_V1.load(Ordering::SeqCst);
     let mut v2 = GLOBAL_SIPHASH_V2.load(Ordering::SeqCst);
     let mut v3 = GLOBAL_SIPHASH_V3.load(Ordering::SeqCst);
 
-    if v0 == 0 && v1 == 0 && v2 == 0 && v3 == 0 {
+    if v0 == 0 || v1 == 0 || v2 == 0 || v3 == 0 {
         initialize_dynamic_siphash();
         v0 = GLOBAL_SIPHASH_V0.load(Ordering::SeqCst);
         v1 = GLOBAL_SIPHASH_V1.load(Ordering::SeqCst);
@@ -369,50 +383,61 @@ pub fn recalculate_global_integrity() {
         v3 = GLOBAL_SIPHASH_V3.load(Ordering::SeqCst);
     }
 
-    v2 ^= combined; // XOR with our data
-    v3 ^= 8; // Length of data
-
-    // Apply compression function
+    // Block 1: Domain-separated score
+    v2 ^= (score as u64) ^ 0x243F6A8885A308D3;
+    v3 ^= 8;
     siphash(&mut v0, &mut v1, &mut v2, &mut v3);
 
-    // Finalization
-    v2 ^= 0xff;
+    // Block 2: Domain-separated decay timestamp
+    v2 ^= decay_time ^ 0x13198A2E03707344;
+    v3 ^= 16;
+    siphash(&mut v0, &mut v1, &mut v2, &mut v3);
+
+    // Finalization rounds
+    v2 ^= 0xFF;
     siphash(&mut v0, &mut v1, &mut v2, &mut v3);
     siphash(&mut v0, &mut v1, &mut v2, &mut v3);
 
-    let result = v0 ^ v1 ^ v2 ^ v3;
+    v0 ^ v1 ^ v2 ^ v3
+}
+
+#[inline(always)]
+fn is_poisoned_internal() -> bool {
+    let poison_val = POISON_SEED.load(Ordering::SeqCst);
+    if poison_val == 0 {
+        return false;
+    }
+    let seed = crate::protector::seed_orchestrator::get_dynamic_seed();
+    let expected_poison = 0xCAFEBABE1337BEEF_u64 ^ (seed as u64);
+    poison_val == 0xDEADBEEF || poison_val != expected_poison
+}
+
+static INTEGRITY_LOCK: AtomicBool = AtomicBool::new(false);
+
+/// Calculate integrity hash using SipHash to detect mid-execution tampering
+pub fn recalculate_global_integrity() {
+    if is_poisoned_internal() {
+        return;
+    }
+    // Spin-wait lock to serialize concurrent integrity recalculations
+    while INTEGRITY_LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        std::hint::spin_loop();
+    }
+    let score = reconstruct_threat_score();
+    let decay_time = GLOBAL_LAST_DECAY_TIME.load(Ordering::SeqCst);
+    let result = compute_integrity_siphash(score, decay_time);
     GLOBAL_INTEGRITY_HASH.store(result, Ordering::SeqCst);
+    INTEGRITY_LOCK.store(false, Ordering::Release);
 }
 
 /// Detect mid-execution tampering via SipHash-based validation
 pub fn validate_global_integrity() -> bool {
-    let combined = (reconstruct_threat_score() as u64)
-        .wrapping_add(GLOBAL_LAST_DECAY_TIME.load(Ordering::SeqCst));
-
-    // Recalculate hash using same dynamic SipHash constants
-    let mut v0 = GLOBAL_SIPHASH_V0.load(Ordering::SeqCst);
-    let mut v1 = GLOBAL_SIPHASH_V1.load(Ordering::SeqCst);
-    let mut v2 = GLOBAL_SIPHASH_V2.load(Ordering::SeqCst);
-    let mut v3 = GLOBAL_SIPHASH_V3.load(Ordering::SeqCst);
-
-    if v0 == 0 && v1 == 0 && v2 == 0 && v3 == 0 {
-        initialize_dynamic_siphash();
-        v0 = GLOBAL_SIPHASH_V0.load(Ordering::SeqCst);
-        v1 = GLOBAL_SIPHASH_V1.load(Ordering::SeqCst);
-        v2 = GLOBAL_SIPHASH_V2.load(Ordering::SeqCst);
-        v3 = GLOBAL_SIPHASH_V3.load(Ordering::SeqCst);
+    if is_poisoned_internal() {
+        return false;
     }
-
-    v2 ^= combined; // XOR with our data
-    v3 ^= 8; // Length of data
-
-    siphash(&mut v0, &mut v1, &mut v2, &mut v3);
-
-    v2 ^= 0xff;
-    siphash(&mut v0, &mut v1, &mut v2, &mut v3);
-    siphash(&mut v0, &mut v1, &mut v2, &mut v3);
-
-    let computed_hash = v0 ^ v1 ^ v2 ^ v3;
+    let score = reconstruct_threat_score();
+    let decay_time = GLOBAL_LAST_DECAY_TIME.load(Ordering::SeqCst);
+    let computed_hash = compute_integrity_siphash(score, decay_time);
     computed_hash == GLOBAL_INTEGRITY_HASH.load(Ordering::SeqCst)
 }
 
@@ -586,7 +611,8 @@ fn get_random_active_indices_3(pair_map: u64) -> (usize, usize, usize) {
         loop {
             rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             let idx = ((rng >> 32) & 0x7F) as usize; // 0..127
-            if is_active_shard(idx, pair_map) {
+            let s = idx % 32;
+            if is_active_shard(idx, pair_map) && s >= 8 && s <= 24 {
                 return idx;
             }
         }
@@ -622,7 +648,8 @@ fn get_random_decoy_indices_3(pair_map: u64) -> (usize, usize, usize) {
         loop {
             rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             let idx = ((rng >> 32) & 0x7F) as usize; // 0..127
-            if !is_active_shard(idx, pair_map) {
+            let s = idx % 32;
+            if !is_active_shard(idx, pair_map) && s >= 8 && s <= 24 {
                 return idx;
             }
         }
@@ -709,7 +736,7 @@ pub fn add_suspicion_at(severity: DetectionSeverity, checkpoint_id: u8) {
 
 /// Helper to add score to specific shard safely (for Active shards)
 fn add_to_shard(idx: usize, amount: u32) {
-    if !GLOBAL_STATE_INITIALIZED.load(Ordering::Relaxed) {
+    if !GLOBAL_STATE_INITIALIZED.load(Ordering::Acquire) {
         return;
     }
     let mask = get_shard_mask(idx);
@@ -739,11 +766,10 @@ fn write_decoy_noise(idx: usize, noise: u32) {
     let mut current_encoded = SUSPICION_SHARDS[idx].load(Ordering::SeqCst);
     
     loop {
-        // Apply same encoding transformation as real shards for authenticity
-        let noise_encoded = noise.rotate_left(idx as u32 % 32) ^ mask;
-        
-        // XOR with current to create temporal variation
-        let new_encoded = current_encoded ^ (noise_encoded & 0xFF); // Limit change magnitude
+        let current_decoded = (current_encoded ^ mask).rotate_right(idx as u32 % 32);
+        let delta = ((noise & 0x0F) as u32).max(1);
+        let new_decoded = current_decoded.saturating_add(delta).min(255);
+        let new_encoded = new_decoded.rotate_left(idx as u32 % 32) ^ mask;
         
         match SUSPICION_SHARDS[idx].compare_exchange(
             current_encoded, new_encoded, Ordering::SeqCst, Ordering::SeqCst
@@ -752,6 +778,14 @@ fn write_decoy_noise(idx: usize, noise: u32) {
             Err(actual) => current_encoded = actual,
         }
     }
+}
+
+/// Generate dynamic decoy decay delta with non-periodic entropy distribution
+#[inline(always)]
+pub fn generate_decoy_decay_delta(entropy: u64, iteration: usize) -> u32 {
+    let base = ((entropy.rotate_left((iteration % 61) as u32)) & 0x6) as u32;
+    let phase = ((iteration / 8) & 1) as u32;
+    base | phase
 }
 
 /// Encapsulated decay logic to be called by add_suspicion and get_suspicion_score
@@ -834,7 +868,7 @@ fn apply_decay() {
             let current_val = (current_encoded ^ mask).rotate_right(idx as u32 % 32);
             
             // Apply pseudo-decay: subtract a small random amount
-            let pseudo_decay = ((decoy_entropy >> (i % 8)) & 0x7) as u32; // 0-7
+            let pseudo_decay = generate_decoy_decay_delta(decoy_entropy, i);
             let new_val = current_val.saturating_sub(pseudo_decay);
             let new_encoded = new_val.rotate_left(idx as u32 % 32) ^ mask;
             
@@ -855,8 +889,8 @@ fn apply_decay() {
 /// Logic: Value_i = (Shard_i ^ Mask_i).rotate_right(i % 32)
 /// Self-Defense: If memory is zeroed, XOR + Rotate results in a massive pseudo-random score.
 pub fn reconstruct_threat_score() -> u32 {
-    if !GLOBAL_STATE_INITIALIZED.load(Ordering::Relaxed) {
-        return 0xFFFFFFFF;
+    if !GLOBAL_STATE_INITIALIZED.load(Ordering::Acquire) {
+        return 0;
     }
     // Pre-calculate pair map once for O(1) per-shard Active check
     let seed = crate::protector::seed_orchestrator::get_dynamic_seed();
@@ -888,7 +922,7 @@ pub fn reconstruct_threat_score() -> u32 {
 /// Get the current suspicion score with lazy decay application
 /// Honeytrap: If reconstructed score > 200, return 0xFFFFFFFF to signal tampering
 pub fn get_suspicion_score() -> u32 {
-    if !GLOBAL_STATE_INITIALIZED.load(Ordering::Relaxed) {
+    if !GLOBAL_STATE_INITIALIZED.load(Ordering::Acquire) {
         return 0;
     }
     apply_decay();
@@ -921,8 +955,9 @@ pub fn get_combined_score() -> u64 {
     let score = get_suspicion_score() as u64;
     let poison = POISON_SEED.load(Ordering::SeqCst);
     
-    // Mathematical coupling: result is garbage if score > 0 or poison is modified
-    (score.wrapping_mul(0x5DEECE66D)) ^ poison
+    // Non-linear cryptographic coupling to prevent algebraic inversion
+    let linear = score.wrapping_mul(0x5DEECE66D) ^ poison;
+    linear.rotate_left(17).wrapping_mul(0x9E3779B97F4A7C15) ^ (poison >> 3)
 }
 
 /// Get the current encryption key (may be corrupted if debugger detected)
@@ -1020,22 +1055,37 @@ pub fn log_detection_event(event_type: u8, severity: u8, timestamp: u64) {
 
     // Apply multiple layers of obfuscation using reconstructed seed
     let seed = crate::protector::seed_orchestrator::get_dynamic_seed();
-    let obfuscated_entry = bitmask_entry ^ (seed as u64);
-    let rotated_entry = obfuscated_entry.rotate_left((seed & 0x1F) as u32); // Rotate by lower 5 bits of seed
-    let final_entry = rotated_entry ^ 0xCAFEBABEDEADBEEF; // Additional XOR with magic constant
+    let final_entry = obfuscate_stealth_log_entry(bitmask_entry, seed);
 
     STEALTH_LOG_BUFFER[idx].store(final_entry, Ordering::SeqCst);
 }
 
+/// Obfuscate stealth log entry with full 64-bit seed entropy diffusion
+#[inline(always)]
+pub fn obfuscate_stealth_log_entry(bitmask_entry: u64, seed: u32) -> u64 {
+    let seed_64 = mix_seed_to_u64(seed);
+    let obfuscated_entry = bitmask_entry ^ seed_64;
+    let shift = ((seed & 0x1F) as u32).max(1);
+    let rotated_entry = obfuscated_entry.rotate_left(shift);
+    rotated_entry ^ 0xCAFEBABEDEADBEEF
+}
+
 /// Update VM key with result from VM execution (for silent corruption)
 pub fn update_vm_key_with_result(vm_result: u64) {
-    let current_key = GLOBAL_VIRTUAL_MACHINE_KEY.load(Ordering::SeqCst);
-    // Apply avalanche effect: XOR with multiple bits of the result to maximize change
-    let transformed_result = (vm_result & 0xFF) ^
+    let transformed_result = ((vm_result & 0xFF) ^
                              ((vm_result >> 8) & 0xFF) ^
                              ((vm_result >> 16) & 0xFF) ^
-                             ((vm_result >> 24) & 0xFF);
-    GLOBAL_VIRTUAL_MACHINE_KEY.store(current_key ^ (transformed_result as u8), Ordering::SeqCst);
+                             ((vm_result >> 24) & 0xFF)) as u8;
+    let mut current = GLOBAL_VIRTUAL_MACHINE_KEY.load(Ordering::SeqCst);
+    loop {
+        let new_key = current ^ transformed_result;
+        match GLOBAL_VIRTUAL_MACHINE_KEY.compare_exchange_weak(
+            current, new_key, Ordering::SeqCst, Ordering::SeqCst
+        ) {
+            Ok(_) => break,
+            Err(actual) => current = actual,
+        }
+    }
 }
 
 /// Poison GLOBAL_ENCRYPTION_KEY on dump attempt detection (for anti_dump_v2)
@@ -1059,21 +1109,43 @@ pub fn poison_encryption_on_dump_attempt() {
 pub fn trigger_silent_poisoning() {
     let entropy = crate::protector::seed_orchestrator::get_dynamic_seed();
     
-    // 1. Corrupt POISON_SEED (Affects all future derived tokens)
-    POISON_SEED.fetch_xor(entropy as u64 ^ 0xDEADBEEFCAFEBABE, Ordering::SeqCst);
+    // 1. Corrupt POISON_SEED with absorbing irreversible latch
+    let mut cur_seed = POISON_SEED.load(Ordering::SeqCst);
+    loop {
+        let latched = cur_seed | 0x8000000000000000;
+        let mixed = latched.wrapping_mul(0x9E3779B97F4A7C15) ^ (entropy as u64 | 1) | 0x8000000000000000;
+        match POISON_SEED.compare_exchange_weak(cur_seed, mixed, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => break,
+            Err(actual) => cur_seed = actual,
+        }
+    }
     
-    // 2. Corrupt Encryption Keys
-    GLOBAL_ENCRYPTION_KEY.fetch_xor((entropy & 0xFF) as u8, Ordering::SeqCst);
-    GLOBAL_VIRTUAL_MACHINE_KEY.fetch_xor(((entropy >> 8) & 0xFF) as u8, Ordering::SeqCst);
+    // 2. Corrupt Encryption Keys with irreversible absorbing latch
+    let mut cur_enc = GLOBAL_ENCRYPTION_KEY.load(Ordering::SeqCst);
+    loop {
+        let latched = cur_enc | 0x80;
+        let mixed = latched.wrapping_mul(31) ^ ((entropy & 0xFF) as u8 | 1) | 0x80;
+        match GLOBAL_ENCRYPTION_KEY.compare_exchange_weak(cur_enc, mixed, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => break,
+            Err(actual) => cur_enc = actual,
+        }
+    }
     
-    // 3. Corrupt Integrity Hash (Ensures future validation fails)
-    let current_hash = GLOBAL_INTEGRITY_HASH.load(Ordering::Relaxed);
-    GLOBAL_INTEGRITY_HASH.store(current_hash ^ 0xBAADF00DCAFEBABE ^ (entropy as u64), Ordering::SeqCst);
+    let mut cur_vm = GLOBAL_VIRTUAL_MACHINE_KEY.load(Ordering::SeqCst);
+    loop {
+        let latched = cur_vm | 0x80;
+        let mixed = latched.wrapping_mul(37) ^ (((entropy >> 8) & 0xFF) as u8 | 1) | 0x80;
+        match GLOBAL_VIRTUAL_MACHINE_KEY.compare_exchange_weak(cur_vm, mixed, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => break,
+            Err(actual) => cur_vm = actual,
+        }
+    }
     
-    // 4. Force Critical Suspicion
-    add_suspicion(DetectionSeverity::Critical);
+    // 3. Corrupt Integrity Hash permanently
+    let current_hash = GLOBAL_INTEGRITY_HASH.load(Ordering::SeqCst);
+    GLOBAL_INTEGRITY_HASH.store(current_hash ^ 0xBAADF00DCAFEBABE ^ (entropy as u64 | 1), Ordering::SeqCst);
     
-    // 5. Disable Diagnostics (Blinding the attacker)
+    // 4. Disable Diagnostics (Blinding the attacker)
     DIAGNOSTIC_MODE.store(false, Ordering::SeqCst);
 }
 

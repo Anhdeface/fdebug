@@ -31,11 +31,11 @@ fuckDebug Architecture:   Debugger detected → Silent Key Poisoning →
 | **Watchdog v2 (Liveness)** | KUSER_SHARED_DATA InterruptTime + Adaptive Thresholding | Detects thread suspension; triggers **Silent Poisoning** instead of exit |
 | **Entangled Execution** | RIP Anchoring + Anti-Trace Derangement Heartbeat | Derangement permutation over $\mathbb{Z}_{256}$ eliminates even-spike cancellation; short program VIP heartbeat |
 | **Randomized TinyVM 2.0** | 256-Entry Indirect V-Table + Mode H LSB Diffusion + Dynamic LTP Map | No switch/match statements; non-linear $\mathbb{F}_2$ diffusion, two-phase fallback (Mode H/L), and poison-reactive Chaos Trap |
-| **128-Shard Suspicion State** | Distributed Atomic State (64 Active / 64 Decoy) | Defeats memory freezing and data breakpoints; zeroing memory causes immediate score spike |
-| **Silent Key Poisoning** | Token-based non-linear key poisoning | No crashes; execution continues with poisoned cryptographic material |
+| **128-Shard Suspicion State** | Distributed Atomic State (64 Active / 64 Decoy) + SipHash-2-4 | Defeats memory freezing and data breakpoints; zeroing memory causes >500 score spike; dynamic partition map & absorbing poison latch |
+| **Silent Key Poisoning** | Token-based non-linear key poisoning + Absorbing Poison Latch | No crashes; execution continues with poisoned cryptographic material; irreversible MSB latch prevents cancellation |
 | **Surgical Anti-Dump & Memory Stealth** | Lock-Free Decoy Traps (8 Atomic Slots) + 64-Byte 16-Aligned Syscalls | Defeats memory dumpers via CAS registration, PAGE_NOACCESS quarantine, saturating math, and SSN grammar validation |
 | **Master VEH 5-Phase Dispatch** | 1232-Byte Win32 CONTEXT ABI + TEB Stack Bounds (gs:[0x08]/0x10) | Enforces frames_walked >= 2, bounded re-entrancy depth <= 1, TF precedence over Dr0 heartbeats, and call frame synthesis |
-| **Formal Mathematical Proofs** | 35 Verus SMT theorems + 85 Bolero property harnesses (355+ tests) | 355+ tests workspace-wide across root crate and 25 verification suite test binaries, 100% pass rate |
+| **Formal Mathematical Proofs** | 50+ Verus SMT theorems + 101 Bolero property harnesses (376 tests) | 376 tests workspace-wide across root crate and 27 verification suite test binaries, 100% pass rate |
 
 ---
 
@@ -47,8 +47,8 @@ Application Layer
     ▼
 Protection Engine
     ├─→ Layer 5: Decentralized State & Silent Corruption
-    │     128 Atomic Shards (64 Active / 64 Decoy), Dynamic SipHash-2-4,
-    │     Dispersed Scattering, Soft Backoff Latency, Token Key Mutation
+    │     128 Atomic Shards (64 Active / 64 Decoy), Domain-Separated SipHash-2-4,
+    │     Dynamic Partition Map, Absorbing Poison Latch, Dispersed Scattering
     │
     ├─→ Layer 4: Polymorphic Virtual Execution (TinyVM 2.0)
     │     256-Entry Indirect V-Table, Mode H Non-Linear LSB Diffusion, Dynamic LTP Chaos Trap,
@@ -71,9 +71,12 @@ Protection Engine
 Rather than relying on a centralized boolean flag (which can be easily modified with a single debugger breakpoint or memory write), suspicion is distributed across **128 atomic shards** (`AtomicU32`):
 - **64 Active Shards**: Contain real suspicion scores.
 - **64 Decoy Shards**: Contain high-entropy decoy noise mimicking real detections.
-- **Pair-Based Partitioning**: Shards are partitioned into 64 pairs `(2*i, 2*i+1)`. A 64-bit pair map derived from the dynamic seed designates which shard in each pair is Active.
-- **XOR Masking**: Each shard stores `(Score.rotate_left(i % 32)) ^ Mask_i`. Zeroing memory results in `0 ^ Mask = Mask`, generating an immediate score spike exceeding 500 points that trips the `0xFFFFFFFF` honeytrap.
-- **Dispersed Scattering**: Detections split suspicion points across 3 random active shards (`p1 + p2 + p3 = amount`) while injecting noise into 3 random decoy shards.
+- **Dynamic Partition Map Evolution**: Shards are partitioned into 64 adjacent pairs `(2*i, 2*i+1)`. A 64-bit pair map is dynamically derived via `compute_dynamic_pair_map(seed, dynamic_counter)` combining runtime seed with threat evolution counter, eliminating static partition space collapse.
+- **XOR Masking & Decoupled Rotation**: Each shard stores `(Score.rotate_left((i ^ 1) % 32)) ^ Mask_i` with rotation shift decoupled from pair parity. Zeroing memory results in `0 ^ Mask = Mask`, generating an immediate score spike exceeding 500 points that trips the `0xFFFFFFFF` honeytrap.
+- **Dispersed Scattering & Bounded Decoy Noise**: Detections split suspicion points across 3 random active shards (`p1 + p2 + p3 = amount`) via atomic CAS loops (`add_to_shard`), while injecting bounded noise into 3 random decoy shards with full 32-bit rotational encoding clamped to 255.
+- **Domain-Separated Dynamic SipHash-2-4**: State integrity is cryptographically validated across two independent compression blocks using domain separation constants `0x243F6A8885A308D3` (score) and `0x13198A2E03707344` (decay timestamp), serialized via `INTEGRITY_LOCK` spin-wait CAS loop.
+- **Absorbing Irreversible Poison Latch**: Irreversible MSB latch (`state | 0x8000_0000_0000_0000`) and linear congruential mixing (`0x9E3779B97F4A7C15`) prevent involutory cancellation under repeated triggers, short-circuiting recalculation and permanently invalidating integrity tags.
+- **Formal Verification**: 16 formal proofs (Verus SMT deductive theorems & Bolero property fuzzing in `defect_layer5_proofs.rs`) verifying AWS unit proof invariants across partition spaces, concurrency races, and poison lifecycles.
 
 ---
 
@@ -94,7 +97,7 @@ fuckDebug/
 │       ├── anti_debug.rs         # Multi-vector detection sensors (2170 lines)
 │       ├── anti_dump.rs          # Lock-free decoy traps & 16-aligned indirect syscalls (549 lines)
 │       ├── enhanced_veh.rs       # 5-phase master VEH with Win32 CONTEXT & re-entrancy bounds (459 lines)
-│       ├── global_state.rs       # 128-shard active/decoy state machine (1101 lines)
+│       ├── global_state.rs       # 128-shard active/decoy state machine (1173 lines)
 │       ├── tiny_vm.rs            # Hardened indirect-threaded virtual machine 2.0 (1660 lines)
 │       └── decoy_system.rs       # Honey pot functions & watchdog prologue scanner (190 lines)
 ├── verification_suite/           # Standalone Formal Verification Harness
@@ -105,9 +108,10 @@ fuckDebug/
 │   │   ├── verus_proofs/         # 35 Verus deductive SMT theorems (Z3 solver)
 │   │   ├── bolero_harnesses/     # 85 Bolero property-based fuzzing harnesses
 │   │   └── shims/                # Test shims for internal component verification
-│   └── tests/                    # 25 integration test binaries (339+ tests)
+│   └── tests/                    # 27 integration test binaries (355+ tests)
 │       ├── hypothesis_*.rs       # Layer 3 & 4 hypothesis formal verification suites (5 binaries)
 │       ├── defect_layer4_tinyvm.rs# Layer 4 TinyVM 2.0 formal defect verification suite (D1..D7)
+│       ├── defect_layer5_proofs.rs# Layer 5 mathematical hardening & formal defect suite (16 proofs)
 │       ├── adversarial_*.rs      # Adversarial challenge suites for Layer 3 invariants (10 binaries)
 │       ├── challenger_*.rs       # Layer 1 & 2 adversarial stress challenges (2 binaries)
 │       ├── defect_proofs.rs      # Formal defect proofs for historical flaws (FLAW-01..16)

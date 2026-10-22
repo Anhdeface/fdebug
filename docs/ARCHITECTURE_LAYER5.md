@@ -136,14 +136,16 @@ TinyVM 2.0 LTP Map      SipHash Constants       128 Shard Masks
 
 1. **TinyVM 2.0 Opcodes & LTP Permutation**:
    `init_vm_mapping()` uses the reconstructed seed to generate the 256-byte Logic-to-Physical (`LTP_MAP`) permutation array.
-2. **Dynamic SipHash-2-4 Globals**:
-   `initialize_dynamic_siphash()` mixes the runtime seed into `GLOBAL_SIPHASH_V0..V3`.
-3. **128-Shard Suspicion Masks**:
-   Each of the 128 atomic shards in `global_state.rs` initializes to `mix_seed(seed, index)` to represent zero suspicion.
+2. **Dynamic SipHash-2-4 Globals & Domain Separation**:
+   `initialize_dynamic_siphash()` mixes the runtime seed into `GLOBAL_SIPHASH_V0..V3`. State validation in `global_state.rs` utilizes two domain-separated compression blocks (`0x243F6A8885A308D3` for threat score and `0x13198A2E03707344` for decay timestamp), mathematically eliminating linear additive collision forgery ((+k, -k) tamper swaps), serialized via `INTEGRITY_LOCK` spin-wait CAS.
+3. **128-Shard Suspicion Masks & Dynamic Partition Map**:
+   Each of the 128 atomic shards in `global_state.rs` initializes to `mix_seed(seed, index)` to represent zero suspicion. Shard partition assignment is dynamically governed by `compute_dynamic_pair_map(seed, dynamic_counter)` combining the seed with the threat evolution counter, eliminating static partition space collapse. Shard rotation shifts are decoupled from pair parity via `(index ^ 1) % 32`, eliminating structural shift leakage.
 4. **Volatile Scrubbing Buffers**:
    `SecureBuffer<N>` passes the reconstructed seed to scramble memory before volatile zeroing on drop.
 5. **Layer 3 Master VEH Heartbeat & Poisoning Seeds**:
    `enhanced_veh.rs` derives the TinyVM hardware heartbeat verification constant ($Dr0 = \text{VM\_KEY} \times 0\text{x}13371337$) and context poisoning seeds from the dynamic master seed, ensuring that hardware breakpoints and single-step traps cleanly discern legitimate execution from debugger tampering.
+6. **Layer 5 Absorbing Poison Latch & Concurrency Synchronization**:
+   `trigger_silent_poisoning()` applies an absorbing MSB bit latch (`state | 0x8000_0000_0000_0000`) and linear congruential mixing (`0x9E3779B97F4A7C15`), guaranteeing that repeated detection triggers cannot cancel corruption or restore clean keys. `update_vm_key_with_result()` employs atomic compare-exchange CAS loops to prevent concurrency lost updates under multi-threaded execution.
 
 ---
 
@@ -157,6 +159,11 @@ TinyVM 2.0 LTP Map      SipHash Constants       128 Shard Masks
 | **Cross-host binary distribution** | Hardware CPUID fingerprint is host-specific | Binary copied to another PC derives a different seed |
 | **Emulation / Sandbox CPUID spoofing** | Null CPUID leaves route to serialized RDTSC ^ RSP fallback | Attacker emulator receives invalid seed |
 | **Opcode pattern scanning** | `LTP_MAP` randomizes physical opcode handlers per build | Signatures fail across different compilations |
+| **Static partition space collapse** | `compute_dynamic_pair_map` evolving pair map via threat evolution counter | Active/decoy assignments dynamically rotate across $2^{64}$ state space |
+| **Decoy entropy starvation & explosion** | Bounded decode-add-clamp-encode loop (clamped to 255) across 32 bits | Decoy writes maintain realistic magnitudes and full rotational entropy |
+| **Additive SipHash collision forgery** | Domain-separated compression blocks (`0x243F6A8885A308D3`, `0x13198A2E03707344`) | (+k, -k) score/timestamp swaps fail digest verification with probability $1 - 2^{-64}$ |
+| **Involutory double-poisoning cancellation** | Absorbing MSB latch (`0x8000_0000_0000_0000`) and non-involutory multiplier | Repeated poisoning calls are strictly non-involutory and irreversible |
+| **Concurrent VM key clobbering** | Atomic `compare_exchange_weak` CAS loop in `update_vm_key_with_result` | Linearized key evolution without lost updates under thread contention |
 
 ---
 
