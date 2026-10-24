@@ -93,9 +93,9 @@ let protector = Protector::new(seed);
 - Any modification invalidates entire seed
 - Provides code integrity verification
 
-**Combined with XOR and Avalanche Mixing:**
+**Combined with Asymmetric 3-Pipeline ARX and Pure Bijective KDF:**
 ```
-FINAL_SEED = avalanche_mix(BUILD_SEED ^ HW_ENTROPY ^ PE_HASH)
+FINAL_SEED = pure_bijective_kdf(hardened_recompose(BUILD_SEED, HW_ENTROPY, PE_HASH))
 ```
 
 ---
@@ -107,7 +107,7 @@ The documentation reflects the **five concentric defense layers**:
 | Layer | Canonical Architecture | Key Mechanisms |
 | --- | --- | --- |
 | **Layer 1: Foundational Entropy & Detection** | Hardware/PE Entanglement & Sensors | Shard 1 (Build), Shard 2 (CPUID), Shard 3 (PE), PEB GS:[0x60], DRx checks, RDTSC, TLS |
-| **Layer 2: Seed Orchestration** | Dynamic Key Derivation & Invariants | Dynamic Seed Reconstruction, Murmur3 Avalanche Finalizer, OnceLock, Golden Ratio Inverse |
+| **Layer 2: Seed Orchestration** | Asymmetric ARX & Pure Bijective KDF | Asymmetric 3-Pipeline ARX, Pure Bijective Fixed-Point-Free KDF, Non-Linear 4-Stage u8 Projection, Lock-Free Atomic Caching, Monotonic Epoch Reseeding |
 | **Layer 3: Memory Stealth & Anti-Dump** | Master VEH, Anti-Dump & Syscalls | 5-Phase Master VEH (1232-byte CONTEXT, TEB Limits, Depth <= 1), Lock-Free Decoy Table (8 slots, saturating math, quarantine), 64-Byte 16-Aligned Syscalls, KUSER Tick Sync |
 | **Layer 4: Polymorphic Virtual Execution** | TinyVM 2.0 Bytecode Execution | 256-Entry Indirect V-Table, Randomized LTP Permutation, Rolling Cipher, Cycle Heartbeat |
 | **Layer 5: Decentralized State & Silent Corruption** | 128 Atomic Shards & Key Poisoning | 64 Active / 64 Decoy Shards, Pair-Based Partition, XOR Masking, 3-Shard Scatter, Soft Backoff |
@@ -153,6 +153,7 @@ The documentation reflects the **five concentric defense layers**:
 
 ```
 docs/
+├── LAYER2_FORMAL_HARDENING.md         ✅ Master Layer 2 Cryptographic Specification (NEW)
 ├── FDEBUG_COMPLETE_GUIDE.md           ✅ Master Guide (Authoritative)
 ├── architecture_guide_NEW.md          ✅ Synchronized 5-Layer Model
 ├── ARCHITECTURE_LAYER5.md             ✅ Seed Orchestrator Specification
@@ -234,6 +235,7 @@ The **five-layer architecture** is now clearly documented:
 ✅ **Writing style and vibe preserved**
 ✅ **Comprehensive guides created for all changes**
 ✅ **Milestone M_DOCS: Layer 3 formal verification hardening and invariants synchronized (F1..F10)**
+✅ **Milestone M4: Layer 2 formal hardening synchronized across all 9 guides and root README.md**
 ✅ **Full test census synchronized: 348 tests workspace-wide (100% pass rate), 35 Verus SMT theorems, 75 Bolero harnesses**
 
 Your documentation is now **current, accurate, and comprehensive** for the enhanced security model!

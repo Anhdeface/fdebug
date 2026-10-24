@@ -35,6 +35,7 @@ fuckDebug Architecture:   Debugger detected → Silent Key Poisoning →
 | **Silent Key Poisoning** | Token-based non-linear key poisoning + Absorbing Poison Latch | No crashes; execution continues with poisoned cryptographic material; irreversible MSB latch prevents cancellation |
 | **Surgical Anti-Dump & Memory Stealth** | Lock-Free Decoy Traps (8 Atomic Slots) + 64-Byte 16-Aligned Syscalls | Defeats memory dumpers via CAS registration, PAGE_NOACCESS quarantine, saturating math, and SSN grammar validation |
 | **Master VEH 5-Phase Dispatch** | 1232-Byte Win32 CONTEXT ABI + TEB Stack Bounds (gs:[0x08]/0x10) | Enforces frames_walked >= 2, bounded re-entrancy depth <= 1, TF precedence over Dr0 heartbeats, and call frame synthesis |
+| **Hardened Key Derivation (Layer 2)** | Asymmetric 3-Pipeline ARX + Pure Bijective KDF + u8 ARX Projection | Breaks linear XOR cancellation ($\Delta \oplus \Delta = 0$), eliminates zero fixed-point ($f(0) \neq 0$), Shannon entropy $H \approx 7.998$ bits, lock-free dynamic atomic caching |
 | **Formal Mathematical Proofs** | 50+ Verus SMT theorems + 101 Bolero property harnesses (376 tests) | 376 tests workspace-wide across root crate and 27 verification suite test binaries, 100% pass rate |
 
 ---
@@ -59,8 +60,9 @@ Protection Engine
     │     Lock-Free Decoy Guard Pages (Saturating Math), 64-Byte 16-Aligned Syscalls
     │
     ├─→ Layer 2: Seed Orchestration & MurmurHash3 Key Derivation
-    │     Dynamic Seed Reconstruction: Avalanche(BUILD ^ HW ^ PE),
-    │     Thread-Safe OnceLock Caching, Golden Ratio Modular Inverse Invariance
+    │     Asymmetric 3-Pipeline ARX Shard Recomposition (breaks Δ ⊕ Δ = 0),
+    │     Pure Bijective Fixed-Point-Free KDF (f(0) != 0, Two-Sided Invertibility),
+    │     Non-Linear 4-Stage ARX u8 Projection (H ≈ 7.998 bits), Lock-Free Dynamic Atomic Caching
     │
     └─→ Layer 1: Foundational Entropy & Detection Entanglement
           Shard 1 (Build Seed), Shard 2 (CPUID Fingerprint), Shard 3 (PE Checksum),
@@ -91,7 +93,7 @@ fuckDebug/
 │   ├── main.rs                   # Entry point demonstration binary
 │   └── protector/
 │       ├── mod.rs                # Core Protector, SecureVault, CoupledLogic (802 lines)
-│       ├── seed_orchestrator.rs  # 3-shard dynamic seed reconstruction (263 lines)
+│       ├── seed_orchestrator.rs  # Hardened 3-pipeline ARX & pure bijective KDF (350+ lines)
 │       ├── hardware_entropy.rs   # CPUID processor fingerprinting (150 lines)
 │       ├── pe_integrity.rs       # PE section sharded checksumming (310 lines)
 │       ├── anti_debug.rs         # Multi-vector detection sensors (2170 lines)
@@ -105,10 +107,12 @@ fuckDebug/
 │   ├── run_verification.ps1      # Authoritative PowerShell verification runner
 │   ├── run_verification.bat      # Windows CMD verification wrapper
 │   ├── src/
-│   │   ├── verus_proofs/         # 35 Verus deductive SMT theorems (Z3 solver)
-│   │   ├── bolero_harnesses/     # 85 Bolero property-based fuzzing harnesses
+│   │   ├── verus_proofs/         # Verus deductive SMT theorems (Z3 solver, DEF-L2-01..05)
+│   │   ├── bolero_harnesses/     # Bolero property-based fuzzing harnesses (SAC, bijectivity)
 │   │   └── shims/                # Test shims for internal component verification
-│   └── tests/                    # 27 integration test binaries (355+ tests)
+│   └── tests/                    # Integration test binaries (355+ tests)
+│       ├── defect_layer2_proofs.rs# Layer 2 formal defect reproduction suite (DEF-L2-01..05)
+│       ├── e2e_layer2_test_suite.rs# Layer 2 4-tier requirement & integration suite
 │       ├── hypothesis_*.rs       # Layer 3 & 4 hypothesis formal verification suites (5 binaries)
 │       ├── defect_layer4_tinyvm.rs# Layer 4 TinyVM 2.0 formal defect verification suite (D1..D7)
 │       ├── defect_layer5_proofs.rs# Layer 5 mathematical hardening & formal defect suite (16 proofs)
@@ -120,6 +124,7 @@ fuckDebug/
 │       ├── repro_defects.rs      # Verified defect reproduction & regression guards
 │       └── shim_stress.rs        # Multithreaded concurrency stress & PE integrity
 ├── docs/                         # Comprehensive Technical Documentation
+│   ├── LAYER2_FORMAL_HARDENING.md# Master Layer 2 cryptographic & formal specification
 │   ├── FDEBUG_COMPLETE_GUIDE.md  # Master integration & verification manual
 │   ├── architecture_guide_NEW.md # 5-layer architecture deep dive
 │   ├── reference_guide_NEW.md    # Complete API reference guide
@@ -150,6 +155,10 @@ fuckDebug/
 - Single-stepping and timing inspection attacks.
 - DLL injection attempts.
 - Virtual execution manipulation (algebraic cryptanalysis, VIP tracing, empty stack state synthesis).
+- Linear shard XOR cancellation attacks & simultaneous environment spoofing ($\Delta \oplus \Delta = 0$).
+- Degenerate zero fixed-point ($f(0)=0$) & zero-sum entropy collapse ($h = b \oplus p$).
+- TinyVM keyspace collapse via 24-bit linear u8 projection kernel.
+- Static caching temporal blindness via lock-free atomic caching and dynamic token coupling.
 
 ### Limitations & Out of Scope
 - Kernel-mode debuggers with hardware hypervisor hooks (Ring -1 / Ring 0).

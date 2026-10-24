@@ -40,26 +40,48 @@ Milestones 3 and M_DOCS completed the comprehensive audit, harmonization, and sy
 
 ---
 
-## 2. Updated File Inventory
+---
+
+## 4. Layer 2 Formal Hardening & AWS Unit Proof Synchronization (Milestone 4)
+
+Milestone 4 established full documentation coverage for the mathematically hardened Layer 2 Seed Orchestrator (`src/protector/seed_orchestrator.rs`), remediating defects DEF-L2-01 through DEF-L2-05:
+
+| Defect ID | Vulnerability / Defect Area | Mathematical Hardening Applied | Formal Proof Artifacts |
+|---|---|---|---|
+| **DEF-L2-01** | Murmur3 fmix32 Trivial Zero Fixed-Point ($fmix32(0) = 0$) | Pure Bijective KDF with golden ratio translation: $f(x) = fmix32(x \oplus 0x9E3779B9)$, guaranteeing $f(0) = 0x92CA2F0E \neq 0$ and $\forall x, f(x) \neq x$ | `theorem_hardened_kdf_two_sided_bijectivity`, `prop_hardened_bijective_kdf_roundtrip` |
+| **DEF-L2-02** | Linear Shard XOR Cancellation ($\Delta \oplus \Delta = 0$) | Asymmetric 3-Pipeline ARX Shard Recomposition combining modular addition, coprime multiplication, and circular bit rotation | `theorem_hardened_recompose_breaks_xor_cancellation`, `prop_hardened_shard_recomposition_differential_non_cancellation` |
+| **DEF-L2-03** | Zero-Sum Shard Entropy Collapse ($h = b \oplus p \implies 0$) | Non-linear ARX mixing destroying $\mathbb{F}_2^{32}$ vector space nullspace; null input $(0,0,0)$ yields $0xC5AFC6F9 \neq 0$ | `theorem_hardened_recompose_zero_sum_non_degeneracy`, `prop_hardened_zero_sum_collapse_resistance` |
+| **DEF-L2-04** | u8 Projection Pairwise Byte Cancellation & 24-Bit Linear Kernel | 4-Stage non-linear ARX projection (`project_u8_hardened`) achieving Shannon entropy $H \approx 7.998$ bits and $\chi^2 < 340.0$ | `theorem_hardened_u8_projection_nullspace_immunity`, `prop_hardened_u8_projection_kernel_resistance` |
+| **DEF-L2-05** | Static OnceLock Caching & Dynamic Token Blindness | Lock-free `AtomicU32` + monotonic `AtomicU64` epoch caching, dynamic token coupling (`evaluate_dynamic_seed`), and asymmetric 64-to-32 token folding | `theorem_dynamic_seed_divergence`, `prop_seed_orchestrator_concurrent_reseeding` |
+
+### Documentation Suite Deliverables
+- **Authored `docs/LAYER2_FORMAL_HARDENING.md`**: Master comprehensive architectural and mathematical specification (7 sections, mathematical proofs, complete API contracts, reproducibility runbooks, and mining ledgers).
+- **Synchronized All 9 Existing Guides in `docs/`**: `architecture_guide_NEW.md`, `ARCHITECTURE_LAYER5.md`, `BUILD_GUIDE.md`, `DOCUMENTATION_UPDATE_SUMMARY.md`, `FDEBUG_COMPLETE_GUIDE.md`, `implementation_guide_NEW.md`, `README_UPDATES.md`, `reference_guide_NEW.md`, and `UPDATES.md`.
+- **Synchronized `README.md`**: Upgraded Layer 2 capabilities while strictly preserving 100% of existing document layout, visual badges, ASCII concentric architecture diagram, and exact 11 TOC headings.
+
+---
+
+## 5. Updated File Inventory
 
 ```
 fuckDebug/
-├── README.md                          ✅ Synchronized root guide (crate name, 5 layers, formal suite, flaw ledger, line counts)
+├── README.md                          ✅ Synchronized root guide (Layer 2 hardened ARX, bijective KDF, 11 TOC headings preserved)
 ├── docs/
-│   ├── FDEBUG_COMPLETE_GUIDE.md       ✅ Comprehensive Master Integration & Verification Guide (Invariants F1..F10)
-│   ├── architecture_guide_NEW.md      ✅ Harmonized 5-Layer Model, 1232-Byte CONTEXT, 64-Byte Syscalls, Lock-Free Decoys
-│   ├── reference_guide_NEW.md         ✅ Accurate API Signatures, CONTEXT Layout, Verification Commands
-│   ├── implementation_guide_NEW.md    ✅ Standardized Crate Imports, Subprocess Isolation, Lock-Free Decoy Quarantine
-│   ├── BUILD_GUIDE.md                 ✅ Build Entropy Customization & Formal Suite Execution (348 Tests)
-│   ├── ARCHITECTURE_LAYER5.md         ✅ Seed Orchestrator Technical Specification
-│   ├── UPDATES.md                     ✅ Technical Changelog (Milestones M1..M3, M4, M_DOCS)
+│   ├── LAYER2_FORMAL_HARDENING.md     ✅ Master Layer 2 Cryptographic & Mathematical Specification (NEW)
+│   ├── FDEBUG_COMPLETE_GUIDE.md       ✅ Comprehensive Master Integration & Verification Guide
+│   ├── architecture_guide_NEW.md      ✅ Harmonized 5-Layer Model, ARX Recomposition, 1232-Byte CONTEXT
+│   ├── reference_guide_NEW.md         ✅ Accurate API Signatures, Hardened KDF APIs, Verification Commands
+│   ├── implementation_guide_NEW.md    ✅ Standardized Crate Imports, Dynamic Token Coupling, Lock-Free Caching
+│   ├── BUILD_GUIDE.md                 ✅ Build Entropy Customization & Formal Suite Execution
+│   ├── ARCHITECTURE_LAYER5.md         ✅ Seed Orchestrator Technical Specification (Hardened ARX & KDF)
+│   ├── UPDATES.md                     ✅ Technical Changelog (Milestones M1..M4, DEF-L2-01..DEF-L2-05)
 │   ├── README_UPDATES.md              ✅ Documentation Update Log & File Index
-│   └── DOCUMENTATION_UPDATE_SUMMARY.md✅ Milestone 3 & M_DOCS Comprehensive Audit & Discrepancy Resolution Record
+│   └── DOCUMENTATION_UPDATE_SUMMARY.md✅ Milestone 3, M_DOCS, and Milestone 4 Comprehensive Audit Record
 ```
 
 ---
 
-## 3. Strict Integrity Attestation
+## 6. Strict Integrity Attestation
 
 - **Zero Modifications to Rust Source Code**: No files in `src/` or `examples/` were edited.
 - **Zero Modifications to Test Code**: No files in `verification_suite/` or `tests/` were edited.
@@ -67,4 +89,4 @@ fuckDebug/
 
 ---
 
-*fuckDebug Documentation Audit & Synchronization — Milestone M_DOCS Complete — 2026*
+*fuckDebug Documentation Audit & Synchronization — Milestone M4 Complete — 2026*

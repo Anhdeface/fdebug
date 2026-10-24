@@ -93,19 +93,49 @@ The **only recommended method** to construct a `Protector` instance.
 
 ---
 
-### Dynamic Seed Orchestrator (`get_dynamic_seed`)
+### Dynamic Seed Orchestrator (`get_dynamic_seed` & Seed Orchestrator)
 
 ```rust
-/// Reconstructs the 32-bit dynamic seed by mixing build-time entropy,
-/// CPUID processor fingerprint, and PE code section integrity checksum.
+/// Reconstructs the 32-bit dynamic master seed via Asymmetric 3-Pipeline ARX Shard Recomposition
+/// and Pure Bijective Fixed-Point-Free KDF. Guaranteed non-zero.
 pub fn get_dynamic_seed() -> u32;
 
-/// 8-bit truncated dynamic seed variant for byte-level operations.
+/// Core evaluation / retrieval accessor for the cached 32-bit dynamic master seed.
+pub fn reconstruct() -> u32;
+
+/// Backward-compatible 4-byte XOR fold projection of the dynamic seed with non-zero bit perturbation.
 pub fn get_dynamic_seed_u8() -> u8;
+
+/// High-entropy non-linear 4-stage ARX 8-bit projection (Shannon entropy H ≈ 7.998 bits, χ² < 340.0).
+pub fn get_hardened_seed_u8() -> u8;
+
+/// Dynamically couples threat score and poison token into the base seed without timing jitter or locking contention.
+pub fn evaluate_dynamic_seed(threat_score: u32, poison_token: u64) -> u32;
+
+/// Dynamically re-seeds the orchestrator with an updated token and monotonically advances epoch.
+pub fn reseed_with_token(dynamic_token: u64) -> u32;
+
+/// Resets cached seed to 0, forcing cold re-evaluation on next access, and advances epoch.
+pub fn invalidate_cache();
+
+/// Returns the monotonic re-seeding epoch counter.
+pub fn get_epoch() -> u64;
+
+// Cryptographic Primitives
+pub fn hardened_recompose(b: u32, h: u32, p: u32) -> u32;
+pub fn pure_bijective_kdf(x: u32) -> u32;
+pub fn inv_pure_bijective_kdf(y: u32) -> u32;
+pub fn project_u8_hardened(seed: u32) -> u8;
+pub fn arx_fold_token64(token: u64, domain_sep: u32) -> u32;
 ```
 
-- **Thread-Safety**: Cached in a `OnceLock<u32>`. Evaluated only once per process execution.
-- **Performance**: Initial computation completes in 50–100 microseconds; subsequent calls read cached memory in 1–10 nanoseconds.
+- **Thread-Safety & Caching**: Cached in lock-free `AtomicU32` with monotonic `AtomicU64` epoch counter. Evaluates in $1\text{--}3\text{ns}$ cached (<10ns under high thread contention). Eliminates static `OnceLock` temporal blindness (DEF-L2-05).
+- **Hardened Cryptographic Invariants**:
+  - *Origin Fixed-Point Elimination (DEF-L2-01)*: $f(0) = fmix32(0x9E3779B9) = 0x92CA2F0E \neq 0$ and $\forall x \in \mathbb{Z}_{2^{32}}, f(x) \neq x$.
+  - *Two-Sided Algebraic Invertibility*: $f^{-1}(f(x)) = x$ and $f(f^{-1}(y)) = y$ without information loss.
+  - *Differential Non-Cancellation (DEF-L2-02)*: $\forall \Delta \neq 0, \text{recompose}(b, h \oplus \Delta, p \oplus \Delta) \neq \text{recompose}(b, h, p)$.
+  - *Zero-Sum Resistance (DEF-L2-03)*: $\text{recompose}(0, 0, 0) = 0xC5AFC6F9 \neq 0$.
+  - *High-Entropy u8 Projection (DEF-L2-04)*: $H \approx 7.998$ bits, $\chi^2 < 340.0$, destroys 24-bit linear nullspace.
 
 ---
 

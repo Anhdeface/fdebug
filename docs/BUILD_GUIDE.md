@@ -63,7 +63,8 @@ fdebug's protection relies on three entropy sources that combine at **runtime**:
 │  • Reads Shard 1 from binary            │
 │  • Detects Shard 2 at runtime (CPUID)   │
 │  • Computes Shard 3 at runtime (PE)     │
-│  • Combines: SEED = avalanche_mix(S1 ⊕ S2 ⊕ S3) │
+│  • Recomposes: S_rec = (s1 ^ s2) + s3 (Asymmetric ARX) │
+│  • Derives: SEED = pure_bijective_kdf(S_rec) (Non-Zero) │
 └─────────────────────────────────────────┘
 ```
 
@@ -727,26 +728,34 @@ fn generate_random_seed_u32() -> u32 {
 
 ## Building & Running the Formal Verification Suite
 
-`fuckDebug` includes an extensive formal verification harness in `verification_suite/` incorporating 35 Verus deductive mathematical theorems (discharged via the Z3 SMT solver) and 75 Bolero property-based fuzzing harnesses covering all 10 modules, alongside 24 integration test binaries (325+ tests workspace-wide across root crate and verification suite, 100% pass rate).
+`fuckDebug` includes an extensive formal verification harness in `verification_suite/` incorporating Verus deductive mathematical theorems (discharged via the Z3 SMT solver) and Bolero property-based fuzzing harnesses covering all modules, meeting AWS Unit Proof Standards (sound specifications, zero unverified axioms, deterministic execution).
 
-### Running Verification via PowerShell (Recommended)
+### Running Layer 2 Formal Defect Proofs (DEF-L2-01 to DEF-L2-05)
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "verification_suite\run_verification.ps1"
+cargo test --manifest-path verification_suite/Cargo.toml --test defect_layer2_proofs -- --test-threads=1
+```
+*Validates*: Formally demonstrates Murmur3 zero fixed-point, linear XOR cancellation, zero-sum collapse, u8 linear kernel collapse, and OnceLock blindness, verifying that hardened implementations resolve each defect cleanly.
+
+### Running Layer 2 End-to-End Test Suite (4 Tiers)
+```powershell
+cargo test --manifest-path verification_suite/Cargo.toml --test e2e_layer2_test_suite -- --test-threads=1
+```
+*Validates*: 45 comprehensive integration and boundary tests covering API compliance, differential sensitivity, thread safety, and cross-layer coupling.
+
+### Running Layer 2 Adversarial Stress Suite (Tier 5 Challengers)
+```powershell
+cargo test --manifest-path verification_suite/Cargo.toml --test adversarial_layer2_challenger_m2_2 -- --test-threads=1
+```
+*Validates*: High-entropy u8 Shannon entropy ($H \ge 7.995$ bits), Chi-Squared uniformity ($\chi^2 < 340.0$), SAC bit diffusion, and sub-10ns execution latency.
+
+### Running Verification Library Harnesses & Verus Models
+```powershell
+cargo test --manifest-path verification_suite/Cargo.toml --lib -- --test-threads=1
 ```
 
-### Running Verification via Windows Batch File
-```cmd
-verification_suite\run_verification.bat
-```
-
-### Running Defect Proofs Directly via Cargo
-```cmd
-cargo test --manifest-path verification_suite/Cargo.toml --test defect_proofs -- --nocapture
-```
-
-### Running All Verification Suite Tests (327 Tests Across 24 Test Binaries)
-```cmd
-cargo test --manifest-path verification_suite/Cargo.toml -- --test-threads=1
+### Running All Workspace Unit Tests
+```powershell
+cargo test --lib
 ```
 
 ---
@@ -774,6 +783,7 @@ cargo test --manifest-path verification_suite/Cargo.toml -- --test-threads=1
 ## Additional Resources
 
 - [Master Guide — Complete Integration Manual](FDEBUG_COMPLETE_GUIDE.md)
+- [Layer 2 Formal Hardening & Mathematical Specification](LAYER2_FORMAL_HARDENING.md)
 - [Architecture Guide — Seed Orchestrator (Layer 2)](ARCHITECTURE_LAYER5.md)
 - [Full Architecture Guide — 5-Layer Model](architecture_guide_NEW.md)
 - [API Reference Guide](reference_guide_NEW.md)

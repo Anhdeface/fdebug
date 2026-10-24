@@ -557,9 +557,11 @@ Running multiple `Protector` instances consecutively within the same process can
 
 ## Security Considerations
 
-1. **Seed Freshness**: Always use `setup_anti_debug!(get_dynamic_seed())`. Never use hardcoded constants (`0xDEADBEEF`, `0x12345678`).
-2. **Data Lifetime**: Consume data immediately within the `run_secure` closure; never clone sensitive data into external global variables.
-3. **Formal Verification Compliance**: The repository includes 325+ automated tests workspace-wide across root crate and 24 verification suite test binaries (100% pass rate), 35 Verus deductive theorems, and 75 Bolero property harnesses. See `docs/FDEBUG_COMPLETE_GUIDE.md` for verification instructions.
+1. **Seed Freshness & Layer 2 Formal Hardening**: Always initialize via `setup_anti_debug!(get_dynamic_seed())`. Never use hardcoded constants (`0xDEADBEEF`, `0x12345678`). Layer 2 uses Asymmetric 3-Pipeline ARX Shard Recomposition to break linear XOR cancellation ($\Delta \oplus \Delta = 0$, DEF-L2-02) and zero-sum collapse (DEF-L2-03). The master seed is derived via a Pure Bijective Fixed-Point-Free KDF ($f(x) = fmix32(x \oplus 0x9E3779B9)$) guaranteeing $f(0) = 0x92CA2F0E \neq 0$ and $f(x) \neq x$ (DEF-L2-01).
+2. **Lock-Free Dynamic Reseeding & Token Coupling**: The seed cache uses `AtomicU32` and `AtomicU64` epoch counters ($< 3\text{ns}$ latency), dynamically coupling runtime threat scores and poison tokens via `evaluate_dynamic_seed(threat, token)` and `arx_fold_token64(token, sep)`, eliminating static `OnceLock` temporal blindness (DEF-L2-05).
+3. **High-Entropy 8-Bit VM Keys**: Use `get_hardened_seed_u8()` or `get_dynamic_seed_u8()` for TinyVM opcode scrambling. The 4-stage ARX projection achieves Shannon entropy $H \approx 7.998$ bits and $\chi^2 < 340.0$, eliminating the 24-dimensional linear kernel of legacy byte folding (DEF-L2-04).
+4. **Data Lifetime**: Consume data immediately within the `run_secure` closure; never clone sensitive data into external global variables.
+5. **Formal Verification Compliance**: The repository includes 348+ automated tests workspace-wide across root crate and verification suite, with Verus SMT deductive theorems and Bolero property harnesses meeting AWS Unit Proof Standards (DEF-L2-01 through DEF-L2-05). See `docs/LAYER2_FORMAL_HARDENING.md` and `docs/FDEBUG_COMPLETE_GUIDE.md` for full verification runbooks.
 
 ---
 
